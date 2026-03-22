@@ -13,7 +13,16 @@ local TS  = game:GetService("TweenService")
 local UIS = game:GetService("UserInputService")
 local RS  = game:GetService("RunService")
 local PLS = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
 local LP  = PLS.LocalPlayer
+
+-- HTTP request fallback (compatible with multiple executors)
+local httpRequest = (typeof(request) == "function" and request)
+    or (typeof(http_request) == "function" and http_request)
+    or (typeof(syn) == "table" and typeof(syn.request) == "function" and syn.request)
+    or (typeof(http) == "table" and typeof(http.request) == "function" and http.request)
+    or (typeof(fluxus) == "table" and typeof(fluxus.request) == "function" and fluxus.request)
+    or nil
 
 -- ══════════════════
 --  MOBILE DETECT
@@ -23,6 +32,34 @@ local function Mobile()
 end
 local function VPS()
     return workspace.CurrentCamera.ViewportSize
+end
+
+--- Text sizes: PC slightly larger = less aliasing on Roblox engine
+local function UISize(pc, m)
+    return Mobile() and m or pc
+end
+
+local function hookGuiQuality(gui)
+    if not gui then
+        return
+    end
+    pcall(function()
+        gui.ScreenInsets = Enum.ScreenInsets.None
+    end)
+    local function applyRenderQuality(inst)
+        if inst:IsA("ImageLabel") or inst:IsA("ImageButton") then
+            pcall(function()
+                inst.ResampleMode = Enum.ResamplerMode.Default
+            end)
+        end
+        if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+            inst.TextStrokeTransparency = 1
+        end
+    end
+    gui.DescendantAdded:Connect(applyRenderQuality)
+    for _, d in ipairs(gui:GetDescendants()) do
+        applyRenderQuality(d)
+    end
 end
 
 -- ══════════════════
@@ -294,7 +331,7 @@ local function PAD(p,a,b,l,r) return N("UIPadding",{PaddingTop=UDim.new(0,a or 6
 local function LL(p,gap) return N("UIListLayout",{Padding=UDim.new(0,gap or 0),SortOrder=Enum.SortOrder.LayoutOrder,Parent=p}) end
 
 -- ══════════════════
---  DRAG + TWEEN  — copiado da redzlib sem alterar 1 letra
+--  DRAG + TWEEN
 -- ══════════════════
 local UIScale = VPS().Y / 450
 
@@ -319,30 +356,21 @@ local function MakeDrag(Instance)
 	task.spawn(function()
 		Instance.Active = true
 		Instance.AutoButtonColor = false
-
 		local DragStart, StartPos, InputOn
-
 		local function Update(Input)
 			local delta = Input.Position - DragStart
 			local Position = UDim2.new(StartPos.X.Scale, StartPos.X.Offset + delta.X / UIScale, StartPos.Y.Scale, StartPos.Y.Offset + delta.Y / UIScale)
 			CreateTween({Instance, "Position", Position, 0.35})
 		end
-
-		Instance.MouseButton1Down:Connect(function()
-			InputOn = true
-		end)
-
+		Instance.MouseButton1Down:Connect(function() InputOn = true end)
 		Instance.InputBegan:Connect(function(Input)
 			if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
 				StartPos = Instance.Position
 				DragStart = Input.Position
-
 				while UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) do RS.Heartbeat:Wait()
 					if InputOn then
 						local d = Input.Position - DragStart
-						if math.abs(d.X) > 3 or math.abs(d.Y) > 3 then
-							_dragMoved = true
-						end
+						if math.abs(d.X) > 3 or math.abs(d.Y) > 3 then _dragMoved = true end
 						Update(Input)
 					end
 				end
@@ -374,35 +402,90 @@ local NCOLS = {Info=Color3.fromRGB(80,130,255),Success=Color3.fromRGB(50,200,90)
 
 function LynxLib:Notify(o)
     o = o or {}
-    local acc = NCOLS[o.Type or "Info"] or NCOLS.Info
+    local type = o.Type or "Info"
+    local acc = NCOLS[type] or NCOLS.Info
+    local iconName = (type == "Success" and "check") or (type == "Error" and "alert-octagon") or (type == "Warning" and "alert-triangle") or "info"
+    
     if not notifHolder then
         local sg = N("ScreenGui",{Name="LynxNotif",IgnoreGuiInset=true,ResetOnSpawn=false,ZIndexBehavior=Enum.ZIndexBehavior.Sibling,Parent=LP:WaitForChild("PlayerGui")})
-        notifHolder = N("Frame",{Name="H",AnchorPoint=Vector2.new(1,1),Position=UDim2.new(1,-14,1,-14),Size=UDim2.new(0,300,1,-28),BackgroundTransparency=1,Parent=sg})
+        hookGuiQuality(sg)
+        notifHolder = N("Frame",{Name="H",AnchorPoint=Vector2.new(1,1),Position=UDim2.new(1,-20,1,-20),Size=UDim2.new(0,280,1,-40),BackgroundTransparency=1,Parent=sg})
         N("UIListLayout",{SortOrder=Enum.SortOrder.LayoutOrder,VerticalAlignment=Enum.VerticalAlignment.Bottom,Padding=UDim.new(0,8),Parent=notifHolder})
     end
+    
+    local hH = (o.Description and o.Description ~= "") and 64 or 48
+    local holder = N("Frame",{Size=UDim2.new(1,0,0,hH),BackgroundTransparency=1,ClipsDescendants=false,Parent=notifHolder})
+    
+    local card = N("CanvasGroup",{Size=UDim2.new(1,0,1,0),Position=UDim2.new(1,30,0,0),BackgroundColor3=C.BG,GroupTransparency=1,Parent=holder})
+    CR(card,10); STR(card,C.PurpleDim,1)
+    
+    -- Icon using Lucide icons
+    local ib = N("ImageLabel",{
+        Position=UDim2.new(0,12,0.5,-14),
+        Size=UDim2.new(0,28,0,28),
+        BackgroundTransparency=1,
+        Image=LynxLib:GetIcon(iconName) or "",
+        ImageColor3=acc,
+        ZIndex=2,Parent=card
+    })
+    
+    local tY = (o.Description and o.Description ~= "") and 11 or 0
+    local tl = N("TextLabel",{
+        Position=UDim2.new(0,48,0,tY),
+        Size=UDim2.new(1,-58,0,18),
+        BackgroundTransparency=1,
+        Font=Enum.Font.GothamBold,
+        TextSize=UISize(14,13),
+        TextColor3=C.White,
+        Text=o.Title or "Notification",
+        TextXAlignment=Enum.TextXAlignment.Left,
+        ZIndex=2,Parent=card
+    })
+    if not o.Description or o.Description == "" then tl.AnchorPoint = Vector2.new(0,0.5); tl.Position = UDim2.new(0,48,0.5,0) end
 
-    local card = N("Frame",{Size=UDim2.new(1,0,0,70),BackgroundColor3=C.NotifBG,BackgroundTransparency=0.1,ClipsDescendants=true,Parent=notifHolder})
-    CR(card,9); STR(card,C.Stroke)
-    N("Frame",{Size=UDim2.new(0,3,1,0),BackgroundColor3=acc,Parent=card})
-    local ib = N("Frame",{Position=UDim2.new(0,14,0.5,-12),Size=UDim2.new(0,24,0,24),BackgroundColor3=Color3.new(acc.R*.18,acc.G*.18,acc.B*.18),ZIndex=2,Parent=card})
-    CR(ib,6)
-    N("TextLabel",{Position=UDim2.new(0,48,0,10),Size=UDim2.new(1,-58,0,18),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=13,TextColor3=C.White,Text=o.Title or "Notification",TextXAlignment=Enum.TextXAlignment.Left,ZIndex=2,Parent=card})
-    N("TextLabel",{Position=UDim2.new(0,48,0,29),Size=UDim2.new(1,-58,0,26),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=11,TextColor3=C.Dim,Text=o.Description or "",TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=2,Parent=card})
-    local bar = N("Frame",{AnchorPoint=Vector2.new(0,1),Position=UDim2.new(0,0,1,0),Size=UDim2.new(1,0,0,2),BackgroundColor3=acc,ZIndex=2,Parent=card})
-
-    card.Position = UDim2.new(0,320,0,0)
-    SP(card,{Position=UDim2.new(0,0,0,0)},.4)
-    local nr={}
-    function nr:Remove()
-        TW(card,{Position=UDim2.new(0,320,0,0),BackgroundTransparency=1},.25)
-        task.delay(.3,function() pcall(function() card:Destroy() end) end)
+    if o.Description and o.Description ~= "" then
+        N("TextLabel",{Position=UDim2.new(0,48,0,29),Size=UDim2.new(1,-58,0,20),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=UISize(12,11),TextColor3=C.Dim,Text=o.Description,TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=2,Parent=card})
     end
+    
+    -- Full width thin progress bar at bottom
+    local bar = N("Frame",{AnchorPoint=Vector2.new(0,1),Position=UDim2.new(0,0,1,0),Size=UDim2.new(1,0,0,2),BackgroundColor3=acc,BackgroundTransparency=0.7,BorderSizePixel=0,ZIndex=3,Parent=card})
+    local barFill = N("Frame",{Size=UDim2.new(1,0,1,0),BackgroundColor3=acc,BorderSizePixel=0,ZIndex=4,Parent=bar})
+    
+    -- Smooth Entrance (Slide + Bounce)
+    TW(card,{GroupTransparency=0},.35,Enum.EasingStyle.Quart,Enum.EasingDirection.Out)
+    TW(card,{Position=UDim2.new(0,0,0,0)},.5,Enum.EasingStyle.Back,Enum.EasingDirection.Out)
+    
+    local function remove()
+        TW(card,{Position=UDim2.new(1,30,0,0)},.45,Enum.EasingStyle.Back,Enum.EasingDirection.In)
+        TW(card,{GroupTransparency=1},.35,Enum.EasingStyle.Quart,Enum.EasingDirection.In)
+        task.delay(.45, function()
+            TW(holder, {Size = UDim2.new(1, 0, 0, 0)}, .18, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
+            task.delay(.2, function() pcall(function() holder:Destroy() end) end)
+        end)
+    end
+    
     local dur = o.Duration or 5
     if dur>0 then
-        TW(bar,{Size=UDim2.new(0,0,0,2)},dur,Enum.EasingStyle.Linear)
-        task.delay(dur,function() nr:Remove() end)
+        TW(barFill,{Size=UDim2.new(0,0,1,0)},dur,Enum.EasingStyle.Linear)
+        task.delay(dur,function() remove() end)
     end
-    return nr
+    
+    local api = {}
+    function api:Remove() remove() end
+    return api
+end
+
+function LynxLib:SendDiscordLog(data, DISCORD_WEBHOOK)
+    if not DISCORD_WEBHOOK or not httpRequest then return end
+    pcall(function()
+        local json = HttpService:JSONEncode(data)
+        httpRequest({
+            Url = DISCORD_WEBHOOK,
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = json
+        })
+    end)
 end
 
 -- ══════════════════════════════════════════════════════════
@@ -416,20 +499,22 @@ function LynxLib:MakeWindow(opts)
     local vp         = VPS()
 
     -- ── Sizing ─────────────────────────────────────
-    --  PC:     500 × 340,  sidebar 155
-    --  Mobile: (screen-20) × (screen-60), sidebar 115
+    --  PC:     580 × 400,  sidebar 170
+    --  Mobile: (screen-20) × (screen-60), sidebar 130
     local W, H, SW
     if mob then
-        W  = math.min(vp.X - 20, 380)
-        H  = math.min(vp.Y - 60, 440)
-        SW = 115
+        W  = math.min(vp.X - 20, 420)
+        H  = math.min(vp.Y - 60, 480)
+        SW = 130
     else
-        W, H, SW = 500, 340, 155
+        W, H, SW = 580, 400, 170
     end
 
     -- Load saved flags
     if saveFolder then
         pcall(function()
+            local httpGet = game.HttpGet or game.HttpGetAsync
+            if not httpGet then return end
             local d = game:GetService("HttpService"):JSONDecode(readfile(saveFolder))
             if d then for k,v in pairs(d) do LynxLib.Flags[k]=v end end
         end)
@@ -441,10 +526,10 @@ function LynxLib:MakeWindow(opts)
         ResetOnSpawn=false, ZIndexBehavior=Enum.ZIndexBehavior.Sibling,
         Parent=LP:WaitForChild("PlayerGui"),
     })
+    hookGuiQuality(GUI)
 
-    -- Start position: center (absolute coords, easier to drag)
-    local startX = mob and 10 or math.floor(vp.X/2 - W/2)
-    local startY = mob and 30 or math.floor(vp.Y/2 - H/2)
+    local startX = math.floor(mob and 10 or (vp.X / 2 - W / 2))
+    local startY = math.floor(mob and 30 or (vp.Y / 2 - H / 2))
 
     -- ── Main Frame ─────────────────────────────────
     local Main = N("Frame",{
@@ -460,7 +545,7 @@ function LynxLib:MakeWindow(opts)
     -- shadow
     N("ImageLabel",{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.new(.5,0,.5,6),Size=UDim2.new(1,40,1,40),BackgroundTransparency=1,Image="rbxassetid://6014261993",ImageColor3=C.Black,ImageTransparency=0.55,ScaleType=Enum.ScaleType.Slice,SliceCenter=Rect.new(49,49,450,450),ZIndex=0,Parent=Main})
 
-    -- ── Resize handle (bottom-right corner) ───────────────
+    -- ── Resize handle ───────────────
     local ResizeHandle = N("TextButton",{
         AnchorPoint = Vector2.new(1,1),
         Position    = UDim2.new(1,0,1,0),
@@ -483,7 +568,6 @@ function LynxLib:MakeWindow(opts)
         Parent=ResizeHandle,
     })
 
-    -- Hover glow on handle
     ResizeHandle.MouseEnter:Connect(function()
         TW(ResizeHandle,{BackgroundColor3=C.Purple,BackgroundTransparency=0},.12)
     end)
@@ -491,7 +575,6 @@ function LynxLib:MakeWindow(opts)
         TW(ResizeHandle,{BackgroundColor3=C.PurpleDim,BackgroundTransparency=0.3},.12)
     end)
 
-    -- Resize drag logic
     local MIN_W = mob and 280 or 340
     local MIN_H = mob and 220 or 260
     local MAX_W = mob and (vp.X - 10) or 800
@@ -515,7 +598,6 @@ function LynxLib:MakeWindow(opts)
             local dy = i.Position.Y - resizeStart.Y
             local nw = math.clamp(sizeStart.X + dx, MIN_W, MAX_W)
             local nh = math.clamp(sizeStart.Y + dy, MIN_H, MAX_H)
-            -- Update W and H live
             W = nw; H = nh
             Main.Size = UDim2.new(0, nw, 0, nh)
         end
@@ -527,7 +609,7 @@ function LynxLib:MakeWindow(opts)
         end
     end)
 
-    -- stroke glow pulse every 1.5s
+    -- stroke glow pulse
     local gDir = true
     local gT   = 0
     RS.Heartbeat:Connect(function(dt)
@@ -541,168 +623,171 @@ function LynxLib:MakeWindow(opts)
     end)
 
     -- ─────────────────────────────────────────────────────
-    --  TOPBAR  ← Title + Subtitle on left | Buttons on right
+    --  TOPBAR
     -- ─────────────────────────────────────────────────────
     local Topbar = N("Frame",{
         Name="Topbar",
-        Size=UDim2.new(1,0,0,38),
+        Size=UDim2.new(1,0,0,44),
         BackgroundColor3=C.TopBG,
         ZIndex=3, Parent=Main,
     })
-    N("Frame",{Position=UDim2.new(0,0,.5,0),Size=UDim2.new(1,0,.5,0),BackgroundColor3=C.TopBG,BorderSizePixel=0,Parent=Topbar})
-    CR(Topbar,10); STR(Topbar,C.Stroke)
+    local TopFiller = N("Frame",{Name="Filler",Position=UDim2.new(0,0,.5,0),Size=UDim2.new(1,0,.5,0),BackgroundColor3=C.TopBG,BorderSizePixel=0,Parent=Topbar})
+    CR(Topbar,10); local tStroke = STR(Topbar,C.Stroke)
 
-    -- "Ly" white + "nx" purple  — inside topbar, left side
     N("TextLabel",{
-        Position=UDim2.new(0,10,0,5),
-        Size=UDim2.new(0,60,0,16),
+        Position=UDim2.new(0,14,0,0),
+        Size=UDim2.new(0,180,1,0),
         BackgroundTransparency=1,
         Font=Enum.Font.GothamBlack,
-        TextSize=mob and 15 or 17,
+        TextSize=UISize(22, 18),
         TextColor3=C.White,
         TextXAlignment=Enum.TextXAlignment.Left,
         RichText=true,
-        Text='<font color="rgb(238,232,255)">Ly</font><font color="rgb(138,43,226)">nx</font>',
+        Text='<font color="rgb(238,232,255)">Lyn</font><font color="rgb(138,43,226)">X</font><font color="rgb(238,232,255)">Scripts</font>',
         ZIndex=5, Parent=Topbar,
     })
-    -- Subtitle below title in topbar
     local SubLabel = N("TextLabel",{
-        Position=UDim2.new(0,11,0,23),
-        Size=UDim2.new(0,120,0,10),
+        Position=UDim2.new(0,14,0,28),
+        Size=UDim2.new(0,160,0,12),
         BackgroundTransparency=1,
         Font=Enum.Font.Gotham,
-        TextSize=9,
+        TextSize=UISize(12, 11),
         TextColor3=C.Dim,
         TextXAlignment=Enum.TextXAlignment.Left,
         Text=subtitle,
         ZIndex=5, Parent=Topbar,
     })
 
-    -- Drag zone: fills topbar but leaves title area and buttons alone
     local DragZone = N("ImageButton",{
-        Position=UDim2.new(0,130,0,0),
-        Size=UDim2.new(1,-210,1,0),
+        Position=UDim2.new(0,180,0,0),
+        Size=UDim2.new(1,-260,1,0),
         BackgroundTransparency=1,
         Image="",ZIndex=4,Parent=Topbar,
     })
-    -- redzlib passa só o Instance; o MakeDrag usa InputBegan nele mesmo
-    MakeDrag(DragZone)
-    -- quando DragZone se move, sincroniza Main
-    DragZone:GetPropertyChangedSignal("Position"):Connect(function()
-        -- não faz nada — DragZone é filho do Topbar, só Main precisa mover
-    end)
-    -- arrastar pela topbar move o Main diretamente
     do
-        local DS, SP2, On
-        DragZone.InputBegan:Connect(function(Input)
-            if Input.UserInputType == Enum.UserInputType.MouseButton1
-            or Input.UserInputType == Enum.UserInputType.Touch then
-                SP2 = Main.Position
-                DS  = Input.Position
-                On  = true
-                while UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) do
-                    RS.Heartbeat:Wait()
-                    if On then
-                        local delta = Input.Position - DS
-                        local newPos = UDim2.new(
-                            SP2.X.Scale, SP2.X.Offset + delta.X / UIScale,
-                            SP2.Y.Scale, SP2.Y.Offset + delta.Y / UIScale
-                        )
-                        CreateTween({Main, "Position", newPos, 0.35})
-                    end
-                end
-                On = false
+        local dragging, dragStart, startPos
+        DragZone.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = true
+                dragStart = input.Position
+                startPos = Main.Position
             end
         end)
-        DragZone.MouseButton1Down:Connect(function() On = true end)
+        UIS.InputChanged:Connect(function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                local delta = input.Position - dragStart
+                local newPos = UDim2.new(startPos.X.Scale, startPos.X.Offset + (delta.X / UIScale), startPos.Y.Scale, startPos.Y.Offset + (delta.Y / UIScale))
+                CreateTween({Main, "Position", newPos, 0.08})
+            end
+        end)
+        UIS.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = false
+            end
+        end)
     end
 
-    -- — button (purple) — usa ImageButton igual redzlib, imagem de "minus"
-    local MinBtn = N("ImageButton",{
+    -- — button (minimize)
+    local MinBtn = N("TextButton",{
         AnchorPoint=Vector2.new(1,.5),
-        Position=UDim2.new(1,-40,.5,0),
-        Size=UDim2.new(0,14,0,14),
-        BackgroundTransparency=1,
-        Image="rbxassetid://10734896206",
-        AutoButtonColor=false,
-        ZIndex=5,Parent=Topbar,
-    })
-
-    -- X button (red)
-    local XBtn = N("ImageButton",{
-        AnchorPoint=Vector2.new(1,.5),
-        Position=UDim2.new(1,-8,.5,0),
+        Position=UDim2.new(1,-42,.5,0),
         Size=UDim2.new(0,26,0,26),
-        BackgroundColor3=C.Red,
-        Image="rbxassetid://117801594953101",
-        ImageColor3=C.White,
-        ScaleType=Enum.ScaleType.Fit,
+        BackgroundColor3=C.Elem,
+        Text="—",
+        TextColor3=C.Dim,
+        TextSize=UISize(17,16),
+        Font=Enum.Font.GothamBold,
         AutoButtonColor=false,
         ZIndex=5,Parent=Topbar,
     })
-    CR(XBtn,13)
-    XBtn.MouseEnter:Connect(function() TW(XBtn,{BackgroundColor3=C.RedH,Size=UDim2.new(0,28,0,28)},.12) end)
-    XBtn.MouseLeave:Connect(function() TW(XBtn,{BackgroundColor3=C.Red,Size=UDim2.new(0,26,0,26)},.12) end)
+    CR(MinBtn,8)
+    local minStroke = STR(MinBtn, C.Stroke, 1)
+    MinBtn.MouseEnter:Connect(function()
+        TW(MinBtn,{BackgroundColor3=C.PurpleDim,TextColor3=C.PurpleL},.15)
+        TW(minStroke,{Color=C.Purple,Thickness=1.5},.15)
+    end)
+    MinBtn.MouseLeave:Connect(function()
+        TW(MinBtn,{BackgroundColor3=C.Elem,TextColor3=C.Dim},.15)
+        TW(minStroke,{Color=C.Stroke,Thickness=1},.15)
+    end)
 
-    -- ─────────────────────────────────────────────────────
-    --  BODY
-    -- ─────────────────────────────────────────────────────
+    -- X button (purple themed)
+    local XBtn = N("TextButton",{
+        AnchorPoint=Vector2.new(1,.5),
+        Position=UDim2.new(1,-10,.5,0),
+        Size=UDim2.new(0,26,0,26),
+        BackgroundColor3=C.Elem,
+        Text="×",
+        TextColor3=C.Dim,
+        TextSize=UISize(19,18),
+        Font=Enum.Font.GothamBold,
+        AutoButtonColor=false,
+        ZIndex=5,Parent=Topbar,
+    })
+    CR(XBtn,8)
+    local xStroke = STR(XBtn, C.Stroke, 1)
+    XBtn.MouseEnter:Connect(function()
+        TW(XBtn,{BackgroundColor3=C.PurpleDim,TextColor3=C.PurpleL},.15)
+        TW(xStroke,{Color=C.Purple,Thickness=1.5},.15)
+    end)
+    XBtn.MouseLeave:Connect(function()
+        TW(XBtn,{BackgroundColor3=C.Elem,TextColor3=C.Dim},.15)
+        TW(xStroke,{Color=C.Stroke,Thickness=1},.15)
+    end)
+
+    -- BODY
     local Body = N("Frame",{
-        Position=UDim2.new(0,0,0,38),
-        Size=UDim2.new(1,0,1,-38),
+        Position=UDim2.new(0,0,0,44),
+        Size=UDim2.new(1,0,1,-44),
         BackgroundTransparency=1,
         ClipsDescendants=true,
         Parent=Main,
     })
+    CR(Body,10)
 
-    -- ─────────────────────────────────────────────────────
-    --  SIDEBAR  (tabs + user panel — no title here)
-    -- ─────────────────────────────────────────────────────
+    -- SIDEBAR
     local Sidebar = N("Frame",{
         Size=UDim2.new(0,SW,1,0),
         BackgroundColor3=C.SideBG,
-        ClipsDescendants=false,
+        ClipsDescendants=true,
         Parent=Body,
     })
     N("Frame",{Size=UDim2.new(1,0,0,10),BackgroundColor3=C.SideBG,BorderSizePixel=0,Parent=Sidebar})
     CR(Sidebar,10)
-    -- right border
-    N("Frame",{AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,0,0,0),Size=UDim2.new(0,1,1,0),BackgroundColor3=C.Stroke,BorderSizePixel=0,Parent=Sidebar})
+    N("Frame",{AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,0,0,0),Size=UDim2.new(0,1,1,-70),BackgroundColor3=C.Stroke,BorderSizePixel=0,Parent=Sidebar})
 
-    -- Tab scroll list — starts from very top of sidebar
     local TabScroll = N("ScrollingFrame",{
-        Position=UDim2.new(0,0,0,4),
-        Size=UDim2.new(1,0,1,-68),
+        Position=UDim2.new(0,0,0,6),
+        Size=UDim2.new(1,0,1,-76),
         BackgroundTransparency=1,
-        ScrollBarThickness=2,
+        ScrollBarThickness=3,
         ScrollBarImageColor3=C.PurpleD,
         CanvasSize=UDim2.new(0,0,0,0),
         AutomaticCanvasSize=Enum.AutomaticSize.Y,
         Parent=Sidebar,
     })
-    LL(TabScroll, 4)
-    PAD(TabScroll, 4,4,6,6)
+    LL(TabScroll, 5)
+    PAD(TabScroll, 6,6,8,8)
 
-    -- ── User Panel (bottom sidebar) ──────────────────────
     local UserPanel = N("Frame",{
         AnchorPoint=Vector2.new(0,1),
         Position=UDim2.new(0,0,1,0),
-        Size=UDim2.new(1,0,0,64),
+        Size=UDim2.new(1,0,0,70),
         BackgroundColor3=C.UserBG,
+        ClipsDescendants=true,
         Parent=Sidebar,
     })
-    N("Frame",{Size=UDim2.new(1,0,0,10),BackgroundColor3=C.UserBG,BorderSizePixel=0,Parent=UserPanel})
+    N("Frame",{Size=UDim2.new(1,0,0,12),BackgroundColor3=C.UserBG,BorderSizePixel=0,Parent=UserPanel})
     CR(UserPanel,10)
-    N("Frame",{Position=UDim2.new(0,7,0,0),Size=UDim2.new(1,-14,0,1),BackgroundColor3=C.SectionLine,BorderSizePixel=0,Parent=UserPanel})
+    N("Frame",{Position=UDim2.new(0,8,0,1),Size=UDim2.new(1,-16,0,1),BackgroundColor3=C.SectionLine,BorderSizePixel=0,Parent=UserPanel})
 
-    -- Avatar
     local AvFrame = N("Frame",{
-        Position=UDim2.new(0,8,0.5,-16),
-        Size=UDim2.new(0,32,0,32),
+        Position=UDim2.new(0,10,0.5,-18),
+        Size=UDim2.new(0,36,0,36),
         BackgroundColor3=C.PurpleDim,
         Parent=UserPanel,
     })
-    CR(AvFrame,16); STR(AvFrame,C.Purple,1.5)
+    CR(AvFrame,18); STR(AvFrame,C.Purple,1.5)
     local AvImg = N("ImageLabel",{
         Size=UDim2.new(1,-4,1,-4),
         Position=UDim2.new(0,2,0,2),
@@ -710,20 +795,18 @@ function LynxLib:MakeWindow(opts)
         Image="",ZIndex=2,
         Parent=AvFrame,
     })
-    CR(AvImg,14)
+    CR(AvImg,16)
     task.spawn(function()
         pcall(function()
-            local img = PLS:GetUserThumbnailAsync(LP.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+            local img = PLS:GetUserThumbnailAsync(LP.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
             AvImg.Image = img
         end)
     end)
 
-    N("TextLabel",{Position=UDim2.new(0,48,0.5,-16),Size=UDim2.new(1,-52,0,16),BackgroundTransparency=1,Font=Enum.Font.GothamSemibold,TextSize=mob and 10 or 11,TextColor3=C.White,Text=LP.DisplayName,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=2,Parent=UserPanel})
-    N("TextLabel",{Position=UDim2.new(0,48,0.5,2 ),Size=UDim2.new(1,-52,0,13),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=9,TextColor3=C.Dim,Text="@"..LP.Name,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=2,Parent=UserPanel})
+    N("TextLabel",{Position=UDim2.new(0,54,0.5,-16),Size=UDim2.new(1,-60,0,17),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=UISize(13,12),TextColor3=C.White,Text=LP.DisplayName,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=2,Parent=UserPanel})
+    N("TextLabel",{Position=UDim2.new(0,54,0.5,3 ),Size=UDim2.new(1,-60,0,13),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=UISize(12,11),TextColor3=C.Dim,Text="@"..LP.Name,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=2,Parent=UserPanel})
 
-    -- ─────────────────────────────────────────────────────
-    --  CONTENT
-    -- ─────────────────────────────────────────────────────
+    -- CONTENT
     local Content = N("Frame",{
         Position=UDim2.new(0,SW+1,0,0),
         Size=UDim2.new(1,-(SW+1),1,0),
@@ -736,38 +819,72 @@ function LynxLib:MakeWindow(opts)
 
     -- Ambient particles
     local PFrame = N("Frame",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,ClipsDescendants=true,ZIndex=0,Parent=Content})
-    local pts, pOn = {}, true
-    for i=1,14 do
-        local p = N("Frame",{Size=UDim2.new(0,math.random(2,4),0,math.random(2,4)),Position=UDim2.new(math.random(),0,math.random(),0),BackgroundColor3=C.Purple,BackgroundTransparency=math.random(6,9)/10,ZIndex=0,Parent=PFrame})
-        CR(p,3)
-        pts[i]={f=p,dx=(math.random()-0.5)*.6,dy=(math.random()-0.5)*.6}
+    N("UIGradient",{
+        Color=ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(20,10,40)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(10,8,18)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(25,12,50)),
+        }),
+        Transparency=NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.92),
+            NumberSequenceKeypoint.new(0.5, 0.97),
+            NumberSequenceKeypoint.new(1, 0.92),
+        }),
+        Rotation=45,
+        Parent=PFrame,
+    })
+
+    local pts = {}
+    for i=1,12 do
+        local sz = math.random(2,5)
+        local p = N("Frame",{
+            Size=UDim2.new(0,sz,0,sz),
+            Position=UDim2.new(math.random()*0.9+0.05,0,math.random()*0.9+0.05,0),
+            BackgroundColor3=C.PurpleL,
+            BackgroundTransparency=math.random(55,80)/100,
+            ZIndex=0,Parent=PFrame,
+        })
+        CR(p,math.ceil(sz/2))
+        pts[i]={f=p,dx=(math.random()-0.5)*0.5,dy=(math.random()-0.5)*0.5}
     end
+    for i=1,5 do
+        local sz = math.random(8,18)
+        local p = N("Frame",{
+            Size=UDim2.new(0,sz,0,sz),
+            Position=UDim2.new(math.random()*0.8+0.1,0,math.random()*0.8+0.1,0),
+            BackgroundColor3=C.Purple,
+            BackgroundTransparency=math.random(82,92)/100,
+            ZIndex=0,Parent=PFrame,
+        })
+        CR(p,math.ceil(sz/2))
+        pts[#pts+1]={f=p,dx=(math.random()-0.5)*0.25,dy=(math.random()-0.5)*0.25}
+    end
+
     local ptT=0
     RS.Heartbeat:Connect(function(dt)
-        if not pOn or not Main.Parent then return end
+        if not Main or not Main.Parent then return end
         ptT=ptT+dt; if ptT<0.033 then return end; ptT=0
         for _,p in ipairs(pts) do
-            if not p.f.Parent then return end
-            local nx=p.f.Position.X.Scale+p.dx*0.003
-            local ny=p.f.Position.Y.Scale+p.dy*0.003
-            if nx<0 or nx>1 then p.dx=-p.dx; nx=math.clamp(nx,0,1) end
-            if ny<0 or ny>1 then p.dy=-p.dy; ny=math.clamp(ny,0,1) end
+            if not p.f or not p.f.Parent then continue end
+            local nx=p.f.Position.X.Scale+p.dx*0.002
+            local ny=p.f.Position.Y.Scale+p.dy*0.002
+            if nx<0.02 or nx>0.98 then p.dx=-p.dx; nx=math.clamp(nx,0.02,0.98) end
+            if ny<0.02 or ny>0.98 then p.dy=-p.dy; ny=math.clamp(ny,0.02,0.98) end
             p.f.Position=UDim2.new(nx,0,ny,0)
         end
     end)
 
-    -- Tab content holder
     local TabHolder = N("Frame",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,ZIndex=1,Parent=Content})
 
-    -- ═══════════════════════════════════════════════════════
-    --  WINDOW API
-    -- ═══════════════════════════════════════════════════════
+    -- WINDOW API
     local Win = {}
     Win._tabs     = {}
     Win._btns     = {}
     Win._active   = nil
     Win._hidden   = false
     Win._collapse = false
+    Win.Initialized = false
+    local suppressMenuKeyToggle = false
 
     local function SaveF()
         if saveFolder then
@@ -775,7 +892,6 @@ function LynxLib:MakeWindow(opts)
         end
     end
 
-    -- ── Dialog ────────────────────────────────────────────
     local dlgOpen = false
     function Win:Dialog(o)
         if dlgOpen then return end; dlgOpen=true; o=o or {}
@@ -785,8 +901,8 @@ function LynxLib:MakeWindow(opts)
         local df = N("Frame",{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.new(.5,0,.6,0),Size=UDim2.new(0,dw,0,124),BackgroundColor3=C.SideBG,ZIndex=21,Parent=Main})
         CR(df,10); STR(df,C.Purple,1.5)
         SP(df,{Position=UDim2.new(.5,0,.5,0)},.4)
-        N("TextLabel",{Position=UDim2.new(0,14,0,12),Size=UDim2.new(1,-28,0,20),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=14,TextColor3=C.White,Text=o.Title or "Dialog",TextXAlignment=Enum.TextXAlignment.Left,ZIndex=22,Parent=df})
-        N("TextLabel",{Position=UDim2.new(0,14,0,34),Size=UDim2.new(1,-28,0,44),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=12,TextColor3=C.Dim,Text=o.Text or "",TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=22,Parent=df})
+        N("TextLabel",{Position=UDim2.new(0,14,0,12),Size=UDim2.new(1,-28,0,20),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=UISize(15,14),TextColor3=C.White,Text=o.Title or "Dialog",TextXAlignment=Enum.TextXAlignment.Left,ZIndex=22,Parent=df})
+        N("TextLabel",{Position=UDim2.new(0,14,0,34),Size=UDim2.new(1,-28,0,44),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=UISize(13,12),TextColor3=C.Dim,Text=o.Text or "",TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=22,Parent=df})
         local br = N("Frame",{AnchorPoint=Vector2.new(0,1),Position=UDim2.new(0,14,1,-12),Size=UDim2.new(1,-28,0,28),BackgroundTransparency=1,ZIndex=22,Parent=df})
         N("UIListLayout",{FillDirection=Enum.FillDirection.Horizontal,HorizontalAlignment=Enum.HorizontalAlignment.Right,Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder,Parent=br})
         local d={}
@@ -797,7 +913,7 @@ function LynxLib:MakeWindow(opts)
             task.delay(.25,function() pcall(function() ov:Destroy();df:Destroy() end) end)
         end
         function d:Button(b)
-            local btn=N("TextButton",{Size=UDim2.new(0,90,1,0),BackgroundColor3=b._p and C.Purple or C.Elem,Text=b.Name or "OK",Font=Enum.Font.GothamSemibold,TextSize=12,TextColor3=C.White,AutoButtonColor=false,ZIndex=23,Parent=br})
+            local btn=N("TextButton",{Size=UDim2.new(0,90,1,0),BackgroundColor3=b._p and C.Purple or C.Elem,Text=b.Name or "OK",Font=Enum.Font.GothamMedium,TextSize=UISize(13,12),TextColor3=C.White,AutoButtonColor=false,ZIndex=23,Parent=br})
             CR(btn,7); STR(btn,b._p and C.PurpleL or C.Stroke)
             btn.MouseEnter:Connect(function() TW(btn,{BackgroundColor3=b._p and C.PurpleL or C.ElemH},.12) end)
             btn.MouseLeave:Connect(function() TW(btn,{BackgroundColor3=b._p and C.Purple or C.Elem},.12) end)
@@ -807,42 +923,43 @@ function LynxLib:MakeWindow(opts)
         return d
     end
 
-    -- Controls
     function Win:Set(_,s) if s then SubLabel.Text=s end end
-
-    -- idêntico à redzlib
-    function Win:Minimize()
-        Main.Visible = not Main.Visible
-    end
+    function Win:Minimize() Main.Visible = not Main.Visible end
 
     function Win:MinimizeBtn()
         if Win._wait then return end
         Win._wait = true
-
         if Win._collapse then
-            MinBtn.Image = "rbxassetid://10734896206"
+            MinBtn.Text = "—"
+            Body.Visible = true
+            ResizeHandle.Visible = true
+            TopFiller.Visible = true
+            mStroke.Enabled = true
             CreateTween({Main, "Size", Win._savedSize, 0.25, true})
             Win._collapse = false
         else
             Win._savedSize = Main.Size
-            CreateTween({Main, "Size", UDim2.fromOffset(Main.Size.X.Offset, 28), 0.25, true})
-            MinBtn.Image = "rbxassetid://10734924532"
+            Body.Visible = false
+            ResizeHandle.Visible = false
+            TopFiller.Visible = false
+            mStroke.Enabled = false
+            CreateTween({Main, "Size", UDim2.fromOffset(Main.Size.X.Offset, 44), 0.25, true})
+            MinBtn.Text = "+"
             Win._collapse = true
         end
-
         Win._wait = false
     end
 
     function Win:CloseBtn()
         self:Dialog({
-            Title="Fechar Script",
-            Text="Tem certeza que deseja fechar o Lynx Hub?",
+            Title="Close Script",
+            Text="Are you sure you want to close the menu?",
             Options={
-                {"Confirmar",function()
+                {"Confirm",function()
                     TW(Main,{Size=UDim2.new(0,0,0,0),BackgroundTransparency=1},.38,Enum.EasingStyle.Back,Enum.EasingDirection.In)
                     task.delay(.42,function() pcall(function() GUI:Destroy() end) end)
                 end},
-                {"Cancelar"},
+                {"Cancel"},
             }
         })
     end
@@ -852,48 +969,31 @@ function LynxLib:MakeWindow(opts)
         if r and r._sel then r:_sel() end
     end
 
-    function Win:SetThemeParticles(s)
-        pOn=s; PFrame.Visible=s
-    end
 
-    -- AddMinimizeButton — código idêntico ao da redzlib
     function Win:AddMinimizeButton(Configs)
         local Button = MakeDrag(N("ImageButton", {
-            Size                   = UDim2.fromOffset(60, 60),
-            Position               = UDim2.fromScale(0.15, 0.15),
+            Size = UDim2.fromOffset(60, 60),
+            Position = UDim2.fromScale(0.15, 0.15),
             BackgroundTransparency = 1,
-            AutoButtonColor        = false,
-            Parent                 = GUI,
+            AutoButtonColor = false,
+            Parent = GUI,
         }))
-
         local Stroke, Corner
-
         if Configs.Corner then
             Corner = N("UICorner", {Parent = Button})
             for k,v in pairs(Configs.Corner) do Corner[k]=v end
         end
-
         if Configs.Stroke then
             Stroke = N("UIStroke", {Parent = Button})
             for k,v in pairs(Configs.Stroke) do Stroke[k]=v end
         end
-
         for k,v in pairs(Configs.Button or {}) do Button[k]=v end
-
         Button.Activated:Connect(function()
-            if not _dragMoved then
-                Win:Minimize()
-            end
+            if not _dragMoved then Win:Minimize() end
         end)
-
-        return {
-            Stroke = Stroke,
-            Corner = Corner,
-            Button = Button,
-        }
+        return { Stroke = Stroke, Corner = Corner, Button = Button }
     end
 
-    -- Wire buttons
     MinBtn.Activated:Connect(function() Win:MinimizeBtn() end)
     XBtn.Activated:Connect(function()   Win:CloseBtn()    end)
 
@@ -906,28 +1006,27 @@ function LynxLib:MakeWindow(opts)
         local tIcon = o4[2] or o4.Icon
         local Tab = {}
 
-        local BH = mob and 38 or 32
+        local BH = mob and 40 or 36
         local TB = N("TextButton",{Size=UDim2.new(1,0,0,BH),BackgroundColor3=C.Elem,Text="",AutoButtonColor=false,ZIndex=2,Parent=TabScroll})
-        CR(TB,7)
+        CR(TB,8)
 
         local ico
         if tIcon then
-            ico = N("ImageLabel",{Position=UDim2.new(0,8,.5,-8),Size=UDim2.new(0,16,0,16),BackgroundTransparency=1,Image=LynxLib:GetIcon(tIcon),ImageColor3=C.Faint,ZIndex=3,Parent=TB})
+            ico = N("ImageLabel",{Position=UDim2.new(0,10,.5,-9),Size=UDim2.new(0,18,0,18),BackgroundTransparency=1,Image=LynxLib:GetIcon(tIcon),ImageColor3=C.Faint,ZIndex=3,Parent=TB})
         end
-        local txX = tIcon and 30 or 9
-        local TBT = N("TextLabel",{Position=UDim2.new(0,txX,0,0),Size=UDim2.new(1,-txX-4,1,0),BackgroundTransparency=1,Font=Enum.Font.GothamSemibold,TextSize=mob and 11 or 12,TextColor3=C.Faint,Text=tName,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=3,Parent=TB})
+        local txX = tIcon and 34 or 11
+        local TBT = N("TextLabel",{Position=UDim2.new(0,txX,0,0),Size=UDim2.new(1,-txX-6,1,0),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=UISize(14, 13),TextColor3=C.Faint,Text=tName,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=3,Parent=TB})
 
         local AccBar = N("Frame",{Position=UDim2.new(0,0,.18,0),Size=UDim2.new(0,3,.64,0),BackgroundColor3=C.Purple,Visible=false,ZIndex=3,Parent=TB})
         CR(AccBar,3)
 
-        -- Content scroll
         local TC = N("ScrollingFrame",{
             Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,
-            ScrollBarThickness=3,ScrollBarImageColor3=C.PurpleD,
+            ScrollBarThickness=4,ScrollBarImageColor3=C.PurpleD,
             CanvasSize=UDim2.new(0,0,0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y,
             Visible=false,ZIndex=1,Parent=TabHolder,
         })
-        LL(TC,6); PAD(TC,10,12,10,10)
+        LL(TC,5); PAD(TC,12,14,12,12)
 
         table.insert(Win._tabs, Tab)
         table.insert(Win._btns,  TB)
@@ -968,22 +1067,18 @@ function LynxLib:MakeWindow(opts)
         function Tab:Enable()  Select() end
         function Tab:Disable() TC.Visible=false end
 
-        -- ── animate element in ───────────────────────────
         local function AIn(f)
             f.Position=UDim2.new(.04,0,0,0)
             f.BackgroundTransparency=1
             TW(f,{Position=UDim2.new(0,0,0,0),BackgroundTransparency=0},.22,Enum.EasingStyle.Quart)
         end
 
-        -- ─────────────────────────────────────────────────
-        --  AddSection
-        -- ─────────────────────────────────────────────────
         function Tab:AddSection(o5)
             o5=o5 or {}
             local nm=o5[1] or o5.Name or ""
             local S=N("Frame",{Size=UDim2.new(1,0,0,22),BackgroundTransparency=1,Parent=TC})
             N("Frame",{AnchorPoint=Vector2.new(0,.5),Position=UDim2.new(0,0,.5,0),Size=UDim2.new(1,0,0,1),BackgroundColor3=C.SectionLine,BorderSizePixel=0,Parent=S})
-            local SL=N("TextLabel",{AnchorPoint=Vector2.new(0,.5),Position=UDim2.new(0,7,.5,0),Size=UDim2.new(0,0,0,13),AutomaticSize=Enum.AutomaticSize.X,BackgroundColor3=C.ContBG,Font=Enum.Font.GothamBold,TextSize=10,TextColor3=C.PurpleL,Text=" "..nm.." ",Parent=S})
+            local SL=N("TextLabel",{AnchorPoint=Vector2.new(0,.5),Position=UDim2.new(0,7,.5,0),Size=UDim2.new(0,0,0,13),AutomaticSize=Enum.AutomaticSize.X,BackgroundColor3=C.ContBG,Font=Enum.Font.GothamBold,TextSize=UISize(11,10),TextColor3=C.PurpleL,Text=" "..nm.." ",Parent=S})
             local o={}
             function o:Set(n) SL.Text=" "..(n or "").." " end
             function o:Visible(v) if v==nil then S.Visible=not S.Visible else S.Visible=v end end
@@ -991,15 +1086,12 @@ function LynxLib:MakeWindow(opts)
             return o
         end
 
-        -- ─────────────────────────────────────────────────
-        --  AddParagraph
-        -- ─────────────────────────────────────────────────
         function Tab:AddParagraph(o5)
             o5=o5 or {}
             local PF=N("Frame",{Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundColor3=C.Elem,Parent=TC})
             CR(PF,7); STR(PF,C.Stroke); PAD(PF,9,9,11,11); AIn(PF)
-            local TL=N("TextLabel",{Size=UDim2.new(1,0,0,15),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=13,TextColor3=C.White,Text=o5[1] or o5.Title or "",TextXAlignment=Enum.TextXAlignment.Left,Parent=PF})
-            local DL=N("TextLabel",{Position=UDim2.new(0,0,0,18),Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=11,TextColor3=C.Dim,Text=o5[2] or o5.Text or "",TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,Parent=PF})
+            local TL=N("TextLabel",{Size=UDim2.new(1,0,0,15),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=UISize(14,13),TextColor3=C.White,Text=o5[1] or o5.Title or "",TextXAlignment=Enum.TextXAlignment.Left,Parent=PF})
+            local DL=N("TextLabel",{Position=UDim2.new(0,0,0,18),Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y,BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=UISize(12,11),TextColor3=C.Dim,Text=o5[2] or o5.Text or "",TextWrapped=true,TextXAlignment=Enum.TextXAlignment.Left,Parent=PF})
             local p={}
             function p:SetTitle(t) TL.Text=t end; function p:SetDesc(d) DL.Text=d end
             function p:Set(t,d) if d then TL.Text=t;DL.Text=d else DL.Text=t end end
@@ -1008,39 +1100,29 @@ function LynxLib:MakeWindow(opts)
             return p
         end
 
-        -- ─────────────────────────────────────────────────
-        --  AddButton
-        -- ─────────────────────────────────────────────────
         function Tab:AddButton(o5)
             o5=o5 or {}
             local bn  = o5[1] or o5.Name or o5.Title or "Button"
             local bd  = o5.Desc or o5.Description or ""
             local cbs = {o5[2] or o5.Callback or function()end}
             local bH  = bd~="" and (mob and 52 or 46) or (mob and 40 or 36)
-
             local BF=N("TextButton",{Size=UDim2.new(1,0,0,bH),BackgroundColor3=C.Elem,Text="",AutoButtonColor=false,Parent=TC})
             CR(BF,7); STR(BF,C.Stroke); AIn(BF)
-
-            local BN=N("TextLabel",{Position=UDim2.new(0,11,0,bd~="" and 6 or 0),Size=UDim2.new(1,-52,bd~="" and 0 or 1,bd~="" and 16 or 0),AutomaticSize=bd=="" and Enum.AutomaticSize.Y or Enum.AutomaticSize.None,BackgroundTransparency=1,Font=Enum.Font.GothamSemibold,TextSize=13,TextColor3=C.White,Text=bn,TextXAlignment=Enum.TextXAlignment.Left,Parent=BF})
-            if bd~="" then N("TextLabel",{Position=UDim2.new(0,11,0,24),Size=UDim2.new(1,-52,0,14),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=11,TextColor3=C.Dim,Text=bd,TextXAlignment=Enum.TextXAlignment.Left,Parent=BF}) end
-
+            local BN=N("TextLabel",{Position=UDim2.new(0,11,0,bd~="" and 6 or 0),Size=UDim2.new(1,-52,bd~="" and 0 or 1,bd~="" and 16 or 0),AutomaticSize=bd=="" and Enum.AutomaticSize.Y or Enum.AutomaticSize.None,BackgroundTransparency=1,Font=Enum.Font.GothamMedium,TextSize=UISize(14,13),TextColor3=C.White,Text=bn,TextXAlignment=Enum.TextXAlignment.Left,Parent=BF})
+            if bd~="" then N("TextLabel",{Position=UDim2.new(0,11,0,24),Size=UDim2.new(1,-52,0,14),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=UISize(12,11),TextColor3=C.Dim,Text=bd,TextXAlignment=Enum.TextXAlignment.Left,Parent=BF}) end
             local RI=N("ImageLabel",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-9,.5,0),Size=UDim2.new(0,24,0,24),BackgroundColor3=C.PurpleDim,Image="rbxassetid://15113922617",ImageColor3=C.White,ScaleType=Enum.ScaleType.Fit,Parent=BF})
             CR(RI,6)
-
-            -- ripple
             local function Rip()
                 local r=N("Frame",{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.new(.5,0,.5,0),Size=UDim2.new(0,0,0,0),BackgroundColor3=C.Purple,BackgroundTransparency=0.55,ZIndex=5,Parent=BF})
                 CR(r,50)
                 TW(r,{Size=UDim2.new(1.8,0,3,0),BackgroundTransparency=1},.5,Enum.EasingStyle.Quart)
                 task.delay(.52,function() pcall(function() r:Destroy() end) end)
             end
-
             BF.MouseEnter:Connect(function() TW(BF,{BackgroundColor3=C.ElemH},.12); TW(RI,{BackgroundColor3=C.PurpleD},.12) end)
             BF.MouseLeave:Connect(function() TW(BF,{BackgroundColor3=C.Elem},.12);  TW(RI,{BackgroundColor3=C.PurpleDim},.12) end)
             BF.MouseButton1Down:Connect(function() TW(BF,{BackgroundColor3=C.ElemA,Size=UDim2.new(1,-4,0,bH-2)},.07) end)
             BF.MouseButton1Up:Connect(function()   SP(BF,{BackgroundColor3=C.ElemH,Size=UDim2.new(1,0,0,bH)},.14) end)
             BF.Activated:Connect(function() Rip(); for _,cb in ipairs(cbs) do pcall(cb) end end)
-
             local bo={}
             function bo:Set(v) if type(v)=="string" then BN.Text=v elseif type(v)=="function" then cbs={v} end end
             function bo:Callback(f) table.insert(cbs,f) end
@@ -1049,9 +1131,6 @@ function LynxLib:MakeWindow(opts)
             return bo
         end
 
-        -- ─────────────────────────────────────────────────
-        --  AddToggle
-        -- ─────────────────────────────────────────────────
         function Tab:AddToggle(o5)
             o5=o5 or {}
             local tn  = o5[1] or o5.Name or o5.Title or "Toggle"
@@ -1061,22 +1140,15 @@ function LynxLib:MakeWindow(opts)
             local tf  = o5[4] or o5.Flag
             local tH  = td~="" and (mob and 52 or 46) or (mob and 40 or 36)
             if tf and LynxLib.Flags[tf]~=nil then tdf=LynxLib.Flags[tf] end
-
             local TF=N("Frame",{Size=UDim2.new(1,0,0,tH),BackgroundColor3=C.Elem,Parent=TC})
             CR(TF,7); STR(TF,C.Stroke); AIn(TF)
-
-            N("TextLabel",{Position=UDim2.new(0,11,0,td~="" and 6 or 0),Size=UDim2.new(1,-64,td~="" and 0 or 1,td~="" and 16 or 0),AutomaticSize=td=="" and Enum.AutomaticSize.Y or Enum.AutomaticSize.None,BackgroundTransparency=1,Font=Enum.Font.GothamSemibold,TextSize=13,TextColor3=C.White,Text=tn,TextXAlignment=Enum.TextXAlignment.Left,Parent=TF})
-            if td~="" then N("TextLabel",{Position=UDim2.new(0,11,0,24),Size=UDim2.new(1,-64,0,14),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=11,TextColor3=C.Dim,Text=td,TextXAlignment=Enum.TextXAlignment.Left,Parent=TF}) end
-
-            -- Pill track
+            N("TextLabel",{Position=UDim2.new(0,11,0,td~="" and 6 or 0),Size=UDim2.new(1,-64,td~="" and 0 or 1,td~="" and 16 or 0),AutomaticSize=td=="" and Enum.AutomaticSize.Y or Enum.AutomaticSize.None,BackgroundTransparency=1,Font=Enum.Font.GothamMedium,TextSize=UISize(14,13),TextColor3=C.White,Text=tn,TextXAlignment=Enum.TextXAlignment.Left,Parent=TF})
+            if td~="" then N("TextLabel",{Position=UDim2.new(0,11,0,24),Size=UDim2.new(1,-64,0,14),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=UISize(12,11),TextColor3=C.Dim,Text=td,TextXAlignment=Enum.TextXAlignment.Left,Parent=TF}) end
             local Track=N("Frame",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-10,.5,0),Size=UDim2.new(0,44,0,22),BackgroundColor3=tdf and C.Purple or C.TgOff,Parent=TF})
             CR(Track,11)
             local tStr=STR(Track,tdf and C.PurpleL or C.Stroke)
-
-            -- Knob (sliding pill)
             local Knob=N("Frame",{AnchorPoint=Vector2.new(0,.5),Position=tdf and UDim2.new(0,22,.5,0) or UDim2.new(0,2,.5,0),Size=UDim2.new(0,16,0,16),BackgroundColor3=C.White,ZIndex=2,Parent=Track})
             CR(Knob,8)
-
             local st=tdf; local busy=false
             local function Flip(ns)
                 if busy then return end; busy=true; st=ns
@@ -1093,16 +1165,13 @@ function LynxLib:MakeWindow(opts)
                 for _,cb in ipairs(cbs) do pcall(cb,st) end
                 task.delay(.3,function() busy=false end)
             end
-
             TF.InputBegan:Connect(function(i)
                 if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then Flip(not st) end
             end)
             TF.MouseEnter:Connect(function() TW(TF,{BackgroundColor3=C.ElemH},.12) end)
             TF.MouseLeave:Connect(function() TW(TF,{BackgroundColor3=C.Elem},.12) end)
-
             if tf then LynxLib.Flags[tf]=st end
             if tdf then task.defer(function() for _,cb in ipairs(cbs) do pcall(cb,st) end end) end
-
             local to={}
             function to:Set(v,_) if type(v)=="boolean" then Flip(v) elseif type(v)=="function" then cbs={v} end end
             function to:Callback(f) table.insert(cbs,f) end
@@ -1111,9 +1180,6 @@ function LynxLib:MakeWindow(opts)
             return to
         end
 
-        -- ─────────────────────────────────────────────────
-        --  AddSlider
-        -- ─────────────────────────────────────────────────
         function Tab:AddSlider(o5)
             o5=o5 or {}
             local sn  = o5[1] or o5.Name or o5.Title or "Slider"
@@ -1126,29 +1192,22 @@ function LynxLib:MakeWindow(opts)
             local sf  = o5[7] or o5.Flag
             if sf and LynxLib.Flags[sf]~=nil then sdf=LynxLib.Flags[sf] end
             sdf=math.clamp(sdf,smn,smx)
-
             local sH=sd~="" and (mob and 62 or 56) or (mob and 50 or 46)
             local SF=N("Frame",{Size=UDim2.new(1,0,0,sH),BackgroundColor3=C.Elem,Parent=TC})
             CR(SF,7); STR(SF,C.Stroke); AIn(SF)
-
-            N("TextLabel",{Position=UDim2.new(0,11,0,8),Size=UDim2.new(.65,0,0,15),BackgroundTransparency=1,Font=Enum.Font.GothamSemibold,TextSize=13,TextColor3=C.White,Text=sn,TextXAlignment=Enum.TextXAlignment.Left,Parent=SF})
-            local SVL=N("TextLabel",{AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-11,0,8),Size=UDim2.new(0,50,0,15),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=13,TextColor3=C.PurpleL,Text=tostring(sdf),TextXAlignment=Enum.TextXAlignment.Right,Parent=SF})
-            if sd~="" then N("TextLabel",{Position=UDim2.new(0,11,0,24),Size=UDim2.new(1,-22,0,13),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=11,TextColor3=C.Dim,Text=sd,TextXAlignment=Enum.TextXAlignment.Left,Parent=SF}) end
-
+            N("TextLabel",{Position=UDim2.new(0,11,0,8),Size=UDim2.new(.65,0,0,15),BackgroundTransparency=1,Font=Enum.Font.GothamMedium,TextSize=UISize(14,13),TextColor3=C.White,Text=sn,TextXAlignment=Enum.TextXAlignment.Left,Parent=SF})
+            local SVL=N("TextLabel",{AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-11,0,8),Size=UDim2.new(0,50,0,15),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=UISize(14,13),TextColor3=C.PurpleL,Text=tostring(sdf),TextXAlignment=Enum.TextXAlignment.Right,Parent=SF})
+            if sd~="" then N("TextLabel",{Position=UDim2.new(0,11,0,24),Size=UDim2.new(1,-22,0,13),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=UISize(12,11),TextColor3=C.Dim,Text=sd,TextXAlignment=Enum.TextXAlignment.Left,Parent=SF}) end
             local yO=sd~="" and 42 or 30
             local TBG=N("Frame",{Position=UDim2.new(0,11,0,yO),Size=UDim2.new(1,-22,0,6),BackgroundColor3=Color3.fromRGB(26,19,46),Parent=SF})
             CR(TBG,3)
-
             local ip=sdf==smx and 1 or (sdf-smn)/(smx-smn)
             local TFl=N("Frame",{Size=UDim2.new(ip,0,1,0),BackgroundColor3=C.Purple,Parent=TBG})
             CR(TFl,3)
             N("UIGradient",{Color=ColorSequence.new{ColorSequenceKeypoint.new(0,C.PurpleL),ColorSequenceKeypoint.new(1,C.Purple)},Parent=TFl})
-
             local SK=N("Frame",{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.new(ip,0,.5,0),Size=UDim2.new(0,14,0,14),BackgroundColor3=C.White,ZIndex=2,Parent=TBG})
             CR(SK,7); STR(SK,C.Purple,2)
-
             local curV=sdf; if sf then LynxLib.Flags[sf]=curV end
-
             local function Upd(v)
                 v=math.clamp(math.round((v-smn)/sin)*sin+smn,smn,smx)
                 if v==curV then return end; curV=v
@@ -1159,13 +1218,11 @@ function LynxLib:MakeWindow(opts)
                 if sf then LynxLib.Flags[sf]=v; LynxLib.Connection.FlagsChanged:_fire(sf,v); SaveF() end
                 for _,cb in ipairs(cbs) do pcall(cb,v) end
             end
-
             local sliding=false
             local function CalcSet(pos)
                 local ab=TBG.AbsolutePosition; local sz=TBG.AbsoluteSize
                 Upd(smn+((pos.X-ab.X)/sz.X)*(smx-smn))
             end
-
             TBG.InputBegan:Connect(function(i)
                 if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
                     sliding=true; TW(SK,{Size=UDim2.new(0,18,0,18)},.08); CalcSet(i.Position)
@@ -1182,7 +1239,6 @@ function LynxLib:MakeWindow(opts)
             SF.MouseEnter:Connect(function() TW(SF,{BackgroundColor3=C.ElemH},.12) end)
             SF.MouseLeave:Connect(function() TW(SF,{BackgroundColor3=C.Elem},.12) end)
             task.defer(function() for _,cb in ipairs(cbs) do pcall(cb,curV) end end)
-
             local so={}
             function so:Set(v) if type(v)=="number" then Upd(v) elseif type(v)=="function" then cbs={v} end end
             function so:Callback(f) table.insert(cbs,f) end
@@ -1191,9 +1247,6 @@ function LynxLib:MakeWindow(opts)
             return so
         end
 
-        -- ─────────────────────────────────────────────────
-        --  AddDropdown
-        -- ─────────────────────────────────────────────────
         function Tab:AddDropdown(o5)
             o5=o5 or {}
             local dn  = o5[1] or o5.Name or o5.Title or "Dropdown"
@@ -1203,20 +1256,29 @@ function LynxLib:MakeWindow(opts)
             local cbs = {o5[4] or o5.Callback or function()end}
             local df  = o5[5] or o5.Flag
             local dmu = o5.MultiSelect or false
+            local compact = o5.Compact
             local ops = {}; for _,v in ipairs(dos) do table.insert(ops,v) end
             if df and LynxLib.Flags[df]~=nil then ddf=LynxLib.Flags[df] end
             local sel = dmu and {} or ddf
             if dmu and ddf then if type(ddf)=="table" then for _,v in ipairs(ddf) do sel[v]=true end else sel[ddf]=true end end
-
-            local dH=dd~="" and (mob and 58 or 50) or (mob and 46 or 40)
+            local dH
+            if dd~="" then
+                dH = mob and 58 or 50
+            elseif compact then
+                dH = mob and 32 or 28
+            else
+                dH = mob and 46 or 40
+            end
             local DF=N("Frame",{Size=UDim2.new(1,0,0,dH),BackgroundColor3=C.Elem,ClipsDescendants=false,ZIndex=2,Parent=TC})
             CR(DF,7); STR(DF,C.Stroke); AIn(DF)
-
-            N("TextLabel",{Position=UDim2.new(0,11,0,dd~="" and 5 or 0),Size=UDim2.new(1,-46,dd~="" and 0 or 1,dd~="" and 16 or 0),AutomaticSize=dd=="" and Enum.AutomaticSize.Y or Enum.AutomaticSize.None,BackgroundTransparency=1,Font=Enum.Font.GothamSemibold,TextSize=13,TextColor3=C.White,Text=dn,TextXAlignment=Enum.TextXAlignment.Left,Parent=DF})
-            if dd~="" then N("TextLabel",{Position=UDim2.new(0,11,0,23),Size=UDim2.new(1,-46,0,13),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=11,TextColor3=C.Dim,Text=dd,TextXAlignment=Enum.TextXAlignment.Left,Parent=DF}) end
-            local SL=N("TextLabel",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-30,.5,0),Size=UDim2.new(.45,0,0,13),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=11,TextColor3=C.Dim,Text=type(sel)=="string" and sel or "Nenhum",TextXAlignment=Enum.TextXAlignment.Right,TextTruncate=Enum.TextTruncate.AtEnd,Parent=DF})
-            local Ar=N("TextLabel",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-9,.5,0),Size=UDim2.new(0,16,0,16),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=12,TextColor3=C.Purple,Text="▾",Parent=DF})
-
+            if compact and dd=="" then
+                N("TextLabel",{AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,9,0.5,0),Size=UDim2.new(1,-46,0,14),BackgroundTransparency=1,Font=Enum.Font.GothamMedium,TextSize=UISize(13,12),TextColor3=C.White,Text=dn,TextXAlignment=Enum.TextXAlignment.Left,Parent=DF})
+            else
+                N("TextLabel",{Position=UDim2.new(0,11,0,dd~="" and 5 or 0),Size=UDim2.new(1,-46,dd~="" and 0 or 1,dd~="" and 16 or 0),AutomaticSize=dd=="" and Enum.AutomaticSize.Y or Enum.AutomaticSize.None,BackgroundTransparency=1,Font=Enum.Font.GothamMedium,TextSize=UISize(14,13),TextColor3=C.White,Text=dn,TextXAlignment=Enum.TextXAlignment.Left,Parent=DF})
+                if dd~="" then N("TextLabel",{Position=UDim2.new(0,11,0,23),Size=UDim2.new(1,-46,0,13),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=UISize(12,11),TextColor3=C.Dim,Text=dd,TextXAlignment=Enum.TextXAlignment.Left,Parent=DF}) end
+            end
+            local SL=N("TextLabel",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-30,.5,0),Size=UDim2.new(.45,0,0,13),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=UISize(12,11),TextColor3=C.Dim,Text=type(sel)=="string" and sel or "None",TextXAlignment=Enum.TextXAlignment.Right,TextTruncate=Enum.TextTruncate.AtEnd,Parent=DF})
+            local Ar=N("TextLabel",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-9,.5,0),Size=UDim2.new(0,16,0,16),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=UISize(13,12),TextColor3=C.Purple,Text="▾",Parent=DF})
             local open=false; local DL=nil
             local function ClsD()
                 if DL then TW(DL,{Size=UDim2.new(1,0,0,0),BackgroundTransparency=1},.16,Enum.EasingStyle.Quart); task.delay(.18,function() pcall(function() DL:Destroy() end); DL=nil end) end
@@ -1230,8 +1292,8 @@ function LynxLib:MakeWindow(opts)
                     local isSel=dmu and sel[opt] or (sel==opt)
                     local it=N("TextButton",{Size=UDim2.new(1,0,0,mob and 36 or 28),BackgroundColor3=isSel and C.PurpleDim or C.DropItem,Text="",AutoButtonColor=false,ZIndex=16,Parent=DL})
                     CR(it,5)
-                    N("TextLabel",{Position=UDim2.new(0,9,0,0),Size=UDim2.new(1,-28,1,0),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=12,TextColor3=isSel and C.White or C.Dim,Text=opt,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=17,Parent=it})
-                    if isSel then N("TextLabel",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-8,.5,0),Size=UDim2.new(0,14,0,14),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=11,TextColor3=C.Purple,Text="✓",ZIndex=17,Parent=it}) end
+                    N("TextLabel",{Position=UDim2.new(0,9,0,0),Size=UDim2.new(1,-28,1,0),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=UISize(13,12),TextColor3=isSel and C.White or C.Dim,Text=opt,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=17,Parent=it})
+                    if isSel then N("TextLabel",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-8,.5,0),Size=UDim2.new(0,14,0,14),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=UISize(12,11),TextColor3=C.Purple,Text="✓",ZIndex=17,Parent=it}) end
                     it.MouseEnter:Connect(function() TW(it,{BackgroundColor3=C.DropHov},.09) end)
                     it.MouseLeave:Connect(function() TW(it,{BackgroundColor3=isSel and C.PurpleDim or C.DropItem},.09) end)
                     it.Activated:Connect(function()
@@ -1251,7 +1313,6 @@ function LynxLib:MakeWindow(opts)
             DF.MouseEnter:Connect(function() if not open then TW(DF,{BackgroundColor3=C.ElemH},.12) end end)
             DF.MouseLeave:Connect(function() if not open then TW(DF,{BackgroundColor3=C.Elem},.12) end end)
             if df then LynxLib.Flags[df]=sel end
-
             local dO={}
             function dO:Set(no,add)
                 if type(no)=="table" and not add then ops={}; for _,v in ipairs(no) do table.insert(ops,v) end
@@ -1267,9 +1328,194 @@ function LynxLib:MakeWindow(opts)
             return dO
         end
 
-        -- ─────────────────────────────────────────────────
-        --  AddTextBox
-        -- ─────────────────────────────────────────────────
+        function Tab:AddKeybind(o5)
+            o5 = o5 or {}
+            local kn = o5[1] or o5.Name or o5.Title or "Keybind"
+            local df = o5[2] or o5.Default or "RightControl"
+            local flag = o5[3] or o5.Flag
+            local cbs = {o5[4] or o5.Callback or function() end}
+            if flag and LynxLib.Flags[flag] ~= nil then
+                df = LynxLib.Flags[flag]
+            end
+            if type(df) ~= "string" or df == "" then
+                df = "RightControl"
+            end
+
+            local dH = mob and 32 or 28
+            local Row = N("TextButton", {
+                Size = UDim2.new(1, 0, 0, dH),
+                BackgroundColor3 = C.Elem,
+                Text = "",
+                AutoButtonColor = false,
+                ZIndex = 2,
+                Parent = TC,
+            })
+            CR(Row, 7)
+            STR(Row, C.Stroke)
+            AIn(Row)
+
+            N("TextLabel", {
+                AnchorPoint = Vector2.new(0, 0.5),
+                Position = UDim2.new(0, 9, 0.5, 0),
+                Size = UDim2.new(1, -46, 0, 14),
+                BackgroundTransparency = 1,
+                Font = Enum.Font.GothamMedium,
+                TextSize = UISize(13, 12),
+                TextColor3 = C.White,
+                Text = kn,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = Row,
+            })
+            local SL = N("TextLabel", {
+                AnchorPoint = Vector2.new(1, 0.5),
+                Position = UDim2.new(1, -30, 0.5, 0),
+                Size = UDim2.new(0.45, 0, 0, 13),
+                BackgroundTransparency = 1,
+                Font = Enum.Font.Gotham,
+                TextSize = UISize(12, 11),
+                TextColor3 = C.Dim,
+                Text = df,
+                TextXAlignment = Enum.TextXAlignment.Right,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+                Parent = Row,
+            })
+            N("ImageLabel", {
+                AnchorPoint = Vector2.new(1, 0.5),
+                Position = UDim2.new(1, -9, 0.5, 0),
+                Size = UDim2.new(0, 16, 0, 16),
+                BackgroundTransparency = 1,
+                Image = LynxLib:GetIcon("keyboard"),
+                ImageColor3 = C.Purple,
+                Parent = Row,
+            })
+
+            local listening = false
+            local listenConn
+
+            local function getVal()
+                if flag and LynxLib.Flags[flag] ~= nil then
+                    return LynxLib.Flags[flag]
+                end
+                return df
+            end
+
+            local function stopListen()
+                listening = false
+                suppressMenuKeyToggle = false
+                if listenConn then
+                    listenConn:Disconnect()
+                    listenConn = nil
+                end
+                TW(Row, {BackgroundColor3 = C.Elem}, 0.12)
+                SL.Text = getVal()
+            end
+
+            local function startListen()
+                if listening then
+                    return
+                end
+                if listenConn then
+                    listenConn:Disconnect()
+                    listenConn = nil
+                end
+                listening = true
+                suppressMenuKeyToggle = true
+                SL.Text = "..."
+                TW(Row, {BackgroundColor3 = C.ElemH}, 0.12)
+
+                task.delay(12, function()
+                    if listening then
+                        stopListen()
+                    end
+                end)
+
+                listenConn = UIS.InputBegan:Connect(function(input, _gp)
+                    if not listening then
+                        return
+                    end
+                    if input.UserInputType ~= Enum.UserInputType.Keyboard then
+                        return
+                    end
+                    if input.KeyCode == Enum.KeyCode.Escape then
+                        stopListen()
+                        return
+                    end
+                    if input.KeyCode ~= Enum.KeyCode.Unknown then
+                        local name = input.KeyCode.Name
+                        df = name
+                        if flag then
+                            LynxLib.Flags[flag] = name
+                            LynxLib.Connection.FlagsChanged:_fire(flag, name)
+                            SaveF()
+                        end
+                        for _, cb in ipairs(cbs) do
+                            pcall(cb, name)
+                        end
+                        SL.Text = name
+                        stopListen()
+                    end
+                end)
+            end
+
+            Row.MouseEnter:Connect(function()
+                if not listening then
+                    TW(Row, {BackgroundColor3 = C.ElemH}, 0.12)
+                end
+            end)
+            Row.MouseLeave:Connect(function()
+                if not listening then
+                    TW(Row, {BackgroundColor3 = C.Elem}, 0.12)
+                end
+            end)
+            Row.Activated:Connect(function()
+                task.defer(function()
+                    task.wait(0.12)
+                    if Row.Parent then
+                        startListen()
+                    end
+                end)
+            end)
+            Row.MouseButton1Down:Connect(function()
+                TW(Row, {BackgroundColor3 = C.ElemA}, 0.07)
+            end)
+            Row.MouseButton1Up:Connect(function()
+                TW(Row, {BackgroundColor3 = listening and C.ElemH or C.Elem}, 0.12)
+            end)
+
+            if flag then
+                LynxLib.Flags[flag] = df
+            end
+
+            local kb = {}
+            function kb:Set(val)
+                if type(val) == "string" and val ~= "" then
+                    df = val
+                    if flag then
+                        LynxLib.Flags[flag] = val
+                    end
+                    SL.Text = val
+                end
+            end
+            function kb:Callback(f)
+                table.insert(cbs, f)
+            end
+            function kb:Visible(v)
+                if v == nil then
+                    Row.Visible = not Row.Visible
+                else
+                    Row.Visible = v
+                end
+            end
+            function kb:Destroy()
+                if listenConn then
+                    listenConn:Disconnect()
+                end
+                suppressMenuKeyToggle = false
+                Row:Destroy()
+            end
+            return kb
+        end
+
         function Tab:AddTextBox(o5)
             o5=o5 or {}
             local tbn = o5[1] or o5.Name or o5.Title or "TextBox"
@@ -1277,18 +1523,15 @@ function LynxLib:MakeWindow(opts)
             local tcb = o5[4] or o5.Callback or function()end
             local tph = o5[5] or o5.PlaceholderText or "Input..."
             local tH  = tbd~="" and (mob and 66 or 60) or (mob and 52 or 48)
-
             local TBF=N("Frame",{Size=UDim2.new(1,0,0,tH),BackgroundColor3=C.Elem,Parent=TC})
             CR(TBF,7); STR(TBF,C.Stroke); AIn(TBF)
-            N("TextLabel",{Position=UDim2.new(0,11,0,8),Size=UDim2.new(1,-22,0,15),BackgroundTransparency=1,Font=Enum.Font.GothamSemibold,TextSize=13,TextColor3=C.White,Text=tbn,TextXAlignment=Enum.TextXAlignment.Left,Parent=TBF})
-            if tbd~="" then N("TextLabel",{Position=UDim2.new(0,11,0,25),Size=UDim2.new(1,-22,0,13),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=11,TextColor3=C.Dim,Text=tbd,TextXAlignment=Enum.TextXAlignment.Left,Parent=TBF}) end
-
+            N("TextLabel",{Position=UDim2.new(0,11,0,8),Size=UDim2.new(1,-22,0,15),BackgroundTransparency=1,Font=Enum.Font.GothamMedium,TextSize=UISize(14,13),TextColor3=C.White,Text=tbn,TextXAlignment=Enum.TextXAlignment.Left,Parent=TBF})
+            if tbd~="" then N("TextLabel",{Position=UDim2.new(0,11,0,25),Size=UDim2.new(1,-22,0,13),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=UISize(12,11),TextColor3=C.Dim,Text=tbd,TextXAlignment=Enum.TextXAlignment.Left,Parent=TBF}) end
             local iy=tbd~="" and 42 or 28
             local IBG=N("Frame",{Position=UDim2.new(0,11,0,iy),Size=UDim2.new(1,-22,0,mob and 22 or 18),BackgroundColor3=C.DropBG,Parent=TBF})
             CR(IBG,5); local iStr=STR(IBG,C.Stroke)
-
             local tbobj={}
-            local TI=N("TextBox",{Size=UDim2.new(1,-14,1,0),Position=UDim2.new(0,7,0,0),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=12,TextColor3=C.White,PlaceholderText=tph,PlaceholderColor3=C.Dim,Text=o5[2] or o5.Default or "",ClearTextOnFocus=o5[3] or o5.ClearText or false,TextXAlignment=Enum.TextXAlignment.Left,Parent=IBG})
+            local TI=N("TextBox",{Size=UDim2.new(1,-14,1,0),Position=UDim2.new(0,7,0,0),BackgroundTransparency=1,Font=Enum.Font.GothamMedium,TextSize=UISize(13,12),TextColor3=C.White,PlaceholderText=tph,PlaceholderColor3=C.Dim,Text=o5[2] or o5.Default or "",ClearTextOnFocus=o5[3] or o5.ClearText or false,TextXAlignment=Enum.TextXAlignment.Left,Parent=IBG})
             TI.Focused:Connect(function() TW(iStr,{Color=C.Purple,Thickness=1.5},.15); TW(IBG,{BackgroundColor3=C.Elem},.15) end)
             TI.FocusLost:Connect(function()
                 TW(iStr,{Color=C.Stroke,Thickness=1},.15); TW(IBG,{BackgroundColor3=C.DropBG},.15)
@@ -1298,16 +1541,12 @@ function LynxLib:MakeWindow(opts)
             end)
             TBF.MouseEnter:Connect(function() TW(TBF,{BackgroundColor3=C.ElemH},.12) end)
             TBF.MouseLeave:Connect(function() TW(TBF,{BackgroundColor3=C.Elem},.12) end)
-
             tbobj.OnChanging=nil
             function tbobj:Visible(v) if v==nil then TBF.Visible=not TBF.Visible else TBF.Visible=v end end
             function tbobj:Destroy() TBF:Destroy() end
             return tbobj
         end
 
-        -- ─────────────────────────────────────────────────
-        --  AddDiscordInvite
-        -- ─────────────────────────────────────────────────
         function Tab:AddDiscordInvite(o5)
             o5=o5 or {}
             local dt  = o5[1] or o5.Title or o5.Name or "Server"
@@ -1316,23 +1555,20 @@ function LynxLib:MakeWindow(opts)
             local di  = o5[4] or o5.Invite or o5.Link or ""
             local don = o5.Online or o5.MembersOnline
             local dm  = o5.Members or o5.TotalMembers
-
             local DC=N("Frame",{Size=UDim2.new(1,0,0,74),BackgroundColor3=Color3.fromRGB(30,32,35),ClipsDescendants=true,Parent=TC})
             CR(DC,9); STR(DC,C.Stroke); AIn(DC)
-
             if dl~="" then
                 local lb=N("Frame",{Position=UDim2.new(0,11,0.5,-17),Size=UDim2.new(0,34,0,34),BackgroundColor3=C.PurpleDim,Parent=DC})
                 CR(lb,17)
                 N("ImageLabel",{Size=UDim2.new(1,-4,1,-4),Position=UDim2.new(0,2,0,2),BackgroundTransparency=1,Image=dl,Parent=lb})
             end
             local tx=dl~="" and 54 or 11
-            N("TextLabel",{Position=UDim2.new(0,tx,0,11),Size=UDim2.new(.6,0,0,17),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=13,TextColor3=Color3.new(1,1,1),Text=dt,TextXAlignment=Enum.TextXAlignment.Left,Parent=DC})
-            if dd2~="" then N("TextLabel",{Position=UDim2.new(0,tx,0,29),Size=UDim2.new(.6,0,0,13),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=11,TextColor3=Color3.fromRGB(175,178,182),Text=dd2,TextXAlignment=Enum.TextXAlignment.Left,Parent=DC}) end
+            N("TextLabel",{Position=UDim2.new(0,tx,0,11),Size=UDim2.new(.6,0,0,17),BackgroundTransparency=1,Font=Enum.Font.GothamBold,TextSize=UISize(14,13),TextColor3=Color3.new(1,1,1),Text=dt,TextXAlignment=Enum.TextXAlignment.Left,Parent=DC})
+            if dd2~="" then N("TextLabel",{Position=UDim2.new(0,tx,0,29),Size=UDim2.new(.6,0,0,13),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=UISize(12,11),TextColor3=Color3.fromRGB(175,178,182),Text=dd2,TextXAlignment=Enum.TextXAlignment.Left,Parent=DC}) end
             if don or dm then
-                N("TextLabel",{Position=UDim2.new(0,tx,0,44),Size=UDim2.new(.6,0,0,12),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=10,TextColor3=Color3.fromRGB(140,144,148),Text=(don and "🟢 "..don.." online" or "")..(dm and "   👥 "..dm or ""),TextXAlignment=Enum.TextXAlignment.Left,Parent=DC})
+                N("TextLabel",{Position=UDim2.new(0,tx,0,44),Size=UDim2.new(.6,0,0,12),BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=UISize(12,11),TextColor3=Color3.fromRGB(140,144,148),Text=(don and "🟢 "..don.." online" or "")..(dm and "   👥 "..dm or ""),TextXAlignment=Enum.TextXAlignment.Left,Parent=DC})
             end
-
-            local JB=N("TextButton",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-11,.5,0),Size=UDim2.new(0,72,0,26),BackgroundColor3=Color3.fromRGB(88,101,242),Text="Join",Font=Enum.Font.GothamBold,TextSize=12,TextColor3=Color3.new(1,1,1),AutoButtonColor=false,Parent=DC})
+            local JB=N("TextButton",{AnchorPoint=Vector2.new(1,.5),Position=UDim2.new(1,-11,.5,0),Size=UDim2.new(0,72,0,26),BackgroundColor3=Color3.fromRGB(88,101,242),Text="Join",Font=Enum.Font.GothamBold,TextSize=UISize(13,12),TextColor3=Color3.new(1,1,1),AutoButtonColor=false,Parent=DC})
             CR(JB,6)
             JB.MouseEnter:Connect(function() TW(JB,{BackgroundColor3=Color3.fromRGB(110,122,255)},.12) end)
             JB.MouseLeave:Connect(function() TW(JB,{BackgroundColor3=Color3.fromRGB(88,101,242)},.12) end)
@@ -1343,145 +1579,988 @@ function LynxLib:MakeWindow(opts)
                 JB.Text="✓ OK"; TW(JB,{BackgroundColor3=Color3.fromRGB(50,188,78)},.2)
                 task.delay(2.5,function() JB.Text="Join"; TW(JB,{BackgroundColor3=Color3.fromRGB(88,101,242)},.2); task.delay(3,function() cool=false end) end)
             end)
-
             local dio={}
             function dio:Visible(v) if v==nil then DC.Visible=not DC.Visible else DC.Visible=v end end
             function dio:Destroy() DC:Destroy() end
             return dio
         end
 
+        function Tab:SetSpacing(gap, padTop, padBottom, padSides)
+            local tc = self._content
+            if not tc then return end
+            for _, c in ipairs(tc:GetChildren()) do
+                if c:IsA("UIListLayout") then
+                    c.Padding = UDim.new(0, gap or 6)
+                elseif c:IsA("UIPadding") then
+                    c.PaddingTop = UDim.new(0, padTop or 10)
+                    c.PaddingBottom = UDim.new(0, padBottom or 12)
+                    c.PaddingLeft = UDim.new(0, padSides or 10)
+                    c.PaddingRight = UDim.new(0, padSides or 10)
+                end
+            end
+        end
+
+        function Tab:AddFileSaveRow(o5)
+            o5 = o5 or {}
+            local label = o5.Label or o5[1] or "File"
+            local default = o5.Default or o5[2] or ""
+            local onSave = o5.OnSave or o5[3] or function() end
+            local onChange = o5.OnChange or function() end
+            local rowH = mob and 42 or 36
+            local wrap = N("Frame", {Size = UDim2.new(1, 0, 0, rowH), BackgroundColor3 = C.Elem, Parent = TC})
+            CR(wrap, 7)
+            STR(wrap, C.Stroke)
+            AIn(wrap)
+            N("TextLabel", {
+                Position = UDim2.new(0, 9, 0, 2),
+                Size = UDim2.new(1, -18, 0, 11),
+                BackgroundTransparency = 1,
+                Font = Enum.Font.GothamBold,
+                TextSize = UISize(11, 10),
+                TextColor3 = C.Dim,
+                Text = label,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = wrap,
+            })
+            local iy = mob and 20 or 18
+            local IBG = N("Frame", {
+                Position = UDim2.new(0, 9, 0, 14),
+                Size = UDim2.new(1, -98, 0, iy),
+                BackgroundColor3 = C.DropBG,
+                Parent = wrap,
+            })
+            CR(IBG, 5)
+            local iStr = STR(IBG, C.Stroke)
+            local TI = N("TextBox", {
+                Size = UDim2.new(1, -12, 1, 0),
+                Position = UDim2.new(0, 6, 0, 0),
+                BackgroundTransparency = 1,
+                Font = Enum.Font.GothamMedium,
+                TextSize = UISize(13, 12),
+                TextColor3 = C.White,
+                Text = default,
+                PlaceholderText = o5.Placeholder or "",
+                PlaceholderColor3 = C.Dim,
+                ClearTextOnFocus = false,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = IBG,
+            })
+            TI.Focused:Connect(function()
+                TW(iStr, {Color = C.Purple, Thickness = 1.5}, 0.15)
+            end)
+            TI.FocusLost:Connect(function()
+                TW(iStr, {Color = C.Stroke, Thickness = 1}, 0.15)
+                pcall(onChange, TI.Text)
+            end)
+            local SB = N("TextButton", {
+                Position = UDim2.new(1, -86, 0, 14),
+                Size = UDim2.new(0, 78, 0, iy),
+                BackgroundColor3 = C.PurpleDim,
+                Text = o5.SaveLabel or "Save",
+                Font = Enum.Font.GothamMedium,
+                TextSize = UISize(13, 12),
+                TextColor3 = C.White,
+                AutoButtonColor = false,
+                Parent = wrap,
+            })
+            CR(SB, 5)
+            STR(SB, C.Purple, 1)
+            SB.MouseEnter:Connect(function()
+                TW(SB, {BackgroundColor3 = C.PurpleD}, 0.12)
+            end)
+            SB.MouseLeave:Connect(function()
+                TW(SB, {BackgroundColor3 = C.PurpleDim}, 0.12)
+            end)
+            SB.Activated:Connect(function()
+                pcall(onSave, TI.Text)
+            end)
+            local ro = {}
+            function ro:Get()
+                return TI.Text
+            end
+            function ro:Set(t)
+                TI.Text = t or ""
+            end
+            function ro:Visible(v)
+                if v == nil then
+                    wrap.Visible = not wrap.Visible
+                else
+                    wrap.Visible = v
+                end
+            end
+            function ro:Destroy()
+                wrap:Destroy()
+            end
+            return ro
+        end
+
+        function Tab:AddButtonRow(o5)
+            o5 = o5 or {}
+            local pairs_ = o5[1] or o5.Buttons or {}
+            local rowH = mob and 40 or 36
+            local row = N("Frame", {Size = UDim2.new(1, 0, 0, rowH), BackgroundTransparency = 1, Parent = TC})
+            for i = 1, math.min(#pairs_, 2) do
+                local pair = pairs_[i]
+                local name = pair[1] or "OK"
+                local cb = pair[2] or function() end
+                local BF = N("TextButton", {
+                    Position = UDim2.new(i == 1 and 0 or 0.5, i == 1 and 0 or 4, 0, 0),
+                    Size = UDim2.new(0.5, -4, 1, 0),
+                    BackgroundColor3 = C.Elem,
+                    Text = "",
+                    AutoButtonColor = false,
+                    Parent = row,
+                })
+                CR(BF, 7)
+                STR(BF, C.Stroke)
+                AIn(BF)
+                local BN = N("TextLabel", {
+                    Position = UDim2.new(0, 11, 0, 0),
+                    Size = UDim2.new(1, -40, 1, 0),
+                    BackgroundTransparency = 1,
+                    Font = Enum.Font.GothamMedium,
+                    TextSize = UISize(14, 13),
+                    TextColor3 = C.White,
+                    Text = name,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    Parent = BF,
+                })
+                local RI = N("ImageLabel", {
+                    AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -9, 0.5, 0),
+                    Size = UDim2.new(0, 22, 0, 22),
+                    BackgroundColor3 = C.PurpleDim,
+                    Image = "rbxassetid://15113922617",
+                    ImageColor3 = C.White,
+                    ScaleType = Enum.ScaleType.Fit,
+                    Parent = BF,
+                })
+                CR(RI, 6)
+                local function Rip()
+                    local r = N("Frame", {
+                        AnchorPoint = Vector2.new(0.5, 0.5),
+                        Position = UDim2.new(0.5, 0, 0.5, 0),
+                        Size = UDim2.new(0, 0, 0, 0),
+                        BackgroundColor3 = C.Purple,
+                        BackgroundTransparency = 0.55,
+                        ZIndex = 5,
+                        Parent = BF,
+                    })
+                    CR(r, 50)
+                    TW(r, {Size = UDim2.new(1.8, 0, 3, 0), BackgroundTransparency = 1}, 0.5, Enum.EasingStyle.Quart)
+                    task.delay(0.52, function()
+                        pcall(function()
+                            r:Destroy()
+                        end)
+                    end)
+                end
+                BF.MouseEnter:Connect(function()
+                    TW(BF, {BackgroundColor3 = C.ElemH}, 0.12)
+                    TW(RI, {BackgroundColor3 = C.PurpleD}, 0.12)
+                end)
+                BF.MouseLeave:Connect(function()
+                    TW(BF, {BackgroundColor3 = C.Elem}, 0.12)
+                    TW(RI, {BackgroundColor3 = C.PurpleDim}, 0.12)
+                end)
+                BF.MouseButton1Down:Connect(function()
+                    TW(BF, {BackgroundColor3 = C.ElemA}, 0.07)
+                end)
+                BF.MouseButton1Up:Connect(function()
+                    TW(BF, {BackgroundColor3 = C.ElemH}, 0.12)
+                end)
+                BF.Activated:Connect(function()
+                    Rip()
+                    pcall(cb)
+                end)
+            end
+            local bro = {}
+            function bro:Visible(v)
+                if v == nil then
+                    row.Visible = not row.Visible
+                else
+                    row.Visible = v
+                end
+            end
+            function bro:Destroy()
+                row:Destroy()
+            end
+            return bro
+        end
+
+        function Tab:AddButtonRowWithToggle(o5)
+            o5 = o5 or {}
+            local pairs_ = o5.Buttons or o5[1] or {}
+            local tg = o5.Toggle or {}
+            local tn = tg[1] or tg.Name or tg.Title or "Auto-Load"
+            local tdf = tg[2] ~= nil and tg[2] or tg.Default or false
+            local tcbs = {tg[3] or tg.Callback or function() end}
+            local tflag = tg[4] or tg.Flag
+            local rowH = mob and 40 or 36
+            local row = N("Frame", {Size = UDim2.new(1, 0, 0, rowH), BackgroundTransparency = 1, Parent = TC})
+            local gap = 5
+            local wScale = 1 / 3
+            local function addBtn(i, pair)
+                local name = pair[1] or "OK"
+                local cb = pair[2] or function() end
+                local BF = N("TextButton", {
+                    Position = UDim2.new(wScale * (i - 1), gap * (i - 1), 0, 0),
+                    Size = UDim2.new(wScale, -gap, 1, 0),
+                    BackgroundColor3 = C.Elem,
+                    Text = "",
+                    AutoButtonColor = false,
+                    Parent = row,
+                })
+                CR(BF, 7)
+                STR(BF, C.Stroke)
+                AIn(BF)
+                N("TextLabel", {
+                    Position = UDim2.new(0, 8, 0, 0),
+                    Size = UDim2.new(1, -36, 1, 0),
+                    BackgroundTransparency = 1,
+                    Font = Enum.Font.GothamMedium,
+                    TextSize = UISize(13, 12),
+                    TextColor3 = C.White,
+                    Text = name,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    TextTruncate = Enum.TextTruncate.AtEnd,
+                    Parent = BF,
+                })
+                local RI = N("ImageLabel", {
+                    AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -7, 0.5, 0),
+                    Size = UDim2.new(0, 20, 0, 20),
+                    BackgroundColor3 = C.PurpleDim,
+                    Image = "rbxassetid://15113922617",
+                    ImageColor3 = C.White,
+                    ScaleType = Enum.ScaleType.Fit,
+                    Parent = BF,
+                })
+                CR(RI, 6)
+                local function Rip()
+                    local r = N("Frame", {
+                        AnchorPoint = Vector2.new(0.5, 0.5),
+                        Position = UDim2.new(0.5, 0, 0.5, 0),
+                        Size = UDim2.new(0, 0, 0, 0),
+                        BackgroundColor3 = C.Purple,
+                        BackgroundTransparency = 0.55,
+                        ZIndex = 5,
+                        Parent = BF,
+                    })
+                    CR(r, 50)
+                    TW(r, {Size = UDim2.new(1.8, 0, 3, 0), BackgroundTransparency = 1}, 0.5, Enum.EasingStyle.Quart)
+                    task.delay(0.52, function()
+                        pcall(function()
+                            r:Destroy()
+                        end)
+                    end)
+                end
+                BF.MouseEnter:Connect(function()
+                    TW(BF, {BackgroundColor3 = C.ElemH}, 0.12)
+                    TW(RI, {BackgroundColor3 = C.PurpleD}, 0.12)
+                end)
+                BF.MouseLeave:Connect(function()
+                    TW(BF, {BackgroundColor3 = C.Elem}, 0.12)
+                    TW(RI, {BackgroundColor3 = C.PurpleDim}, 0.12)
+                end)
+                BF.MouseButton1Down:Connect(function()
+                    TW(BF, {BackgroundColor3 = C.ElemA}, 0.07)
+                end)
+                BF.MouseButton1Up:Connect(function()
+                    TW(BF, {BackgroundColor3 = C.ElemH}, 0.12)
+                end)
+                BF.Activated:Connect(function()
+                    Rip()
+                    pcall(cb)
+                end)
+            end
+            for i = 1, math.min(#pairs_, 2) do
+                addBtn(i, pairs_[i])
+            end
+            if tflag and LynxLib.Flags[tflag] ~= nil then
+                tdf = LynxLib.Flags[tflag]
+            end
+            local TF = N("Frame", {
+                Position = UDim2.new(wScale * 2, gap * 2, 0, 0),
+                Size = UDim2.new(wScale, -gap, 1, 0),
+                BackgroundColor3 = C.Elem,
+                Parent = row,
+            })
+            CR(TF, 7)
+            STR(TF, C.Stroke)
+            AIn(TF)
+            N("TextLabel", {
+                Position = UDim2.new(0, 6, 0, 0),
+                Size = UDim2.new(1, -52, 1, 0),
+                BackgroundTransparency = 1,
+                Font = Enum.Font.GothamMedium,
+                TextSize = UISize(12, 11),
+                TextColor3 = C.White,
+                Text = tn,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+                Parent = TF,
+            })
+            local Track = N("Frame", {
+                AnchorPoint = Vector2.new(1, 0.5),
+                Position = UDim2.new(1, -6, 0.5, 0),
+                Size = UDim2.new(0, 40, 0, 20),
+                BackgroundColor3 = tdf and C.Purple or C.TgOff,
+                Parent = TF,
+            })
+            CR(Track, 10)
+            local tStr = STR(Track, tdf and C.PurpleL or C.Stroke)
+            local Knob = N("Frame", {
+                AnchorPoint = Vector2.new(0, 0.5),
+                Position = tdf and UDim2.new(0, 20, 0.5, 0) or UDim2.new(0, 2, 0.5, 0),
+                Size = UDim2.new(0, 14, 0, 14),
+                BackgroundColor3 = C.White,
+                ZIndex = 2,
+                Parent = Track,
+            })
+            CR(Knob, 7)
+            local st = tdf
+            local busy = false
+            local function Flip(ns)
+                if busy then
+                    return
+                end
+                busy = true
+                st = ns
+                if ns then
+                    TW(Track, {BackgroundColor3 = C.Purple}, 0.2)
+                    SP(Knob, {Position = UDim2.new(0, 20, 0.5, 0)}, 0.25)
+                    TW(tStr, {Color = C.PurpleL}, 0.2)
+                else
+                    TW(Track, {BackgroundColor3 = C.TgOff}, 0.2)
+                    SP(Knob, {Position = UDim2.new(0, 2, 0.5, 0)}, 0.25)
+                    TW(tStr, {Color = C.Stroke}, 0.2)
+                end
+                if tflag then
+                    LynxLib.Flags[tflag] = st
+                    LynxLib.Connection.FlagsChanged:_fire(tflag, st)
+                    SaveF()
+                end
+                for _, f in ipairs(tcbs) do
+                    pcall(f, st)
+                end
+                task.delay(0.3, function()
+                    busy = false
+                end)
+            end
+            TF.InputBegan:Connect(function(i)
+                if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+                    Flip(not st)
+                end
+            end)
+            TF.MouseEnter:Connect(function()
+                TW(TF, {BackgroundColor3 = C.ElemH}, 0.12)
+            end)
+            TF.MouseLeave:Connect(function()
+                TW(TF, {BackgroundColor3 = C.Elem}, 0.12)
+            end)
+            if tflag then
+                LynxLib.Flags[tflag] = st
+            end
+            if tdf then
+                task.defer(function()
+                    for _, f in ipairs(tcbs) do
+                        pcall(f, st)
+                    end
+                end)
+            end
+            local to = {}
+            function to:Set(v, _)
+                if type(v) == "boolean" then
+                    Flip(v)
+                elseif type(v) == "function" then
+                    tcbs = {v}
+                end
+            end
+            function to:Callback(f)
+                table.insert(tcbs, f)
+            end
+            function to:Visible(v)
+                if v == nil then
+                    TF.Visible = not TF.Visible
+                else
+                    TF.Visible = v
+                end
+            end
+            function to:Destroy()
+                TF:Destroy()
+            end
+            local bro = {}
+            function bro:Visible(v)
+                if v == nil then
+                    row.Visible = not row.Visible
+                else
+                    row.Visible = v
+                end
+            end
+            function bro:Destroy()
+                row:Destroy()
+            end
+            return {Row = bro, Toggle = to}
+        end
+
+        function Tab:AddConfigManager(o5)
+            o5 = o5 or {}
+            local folder = o5.Folder or "LynxConfigs"
+            local autoloadFile = o5.AutoloadFile or "LynxConfigs/autoload.txt"
+            local ph = o5.Placeholder or o5[1] or "Config name..."
+            local defName = o5.Default or o5[2] or ""
+            local rowH = mob and 36 or 32
+            local btnH = rowH - 8
+            -- Same visual logic as AddTextBox without description: taller field and breathing room
+            local iy = 28
+            local ibgH = mob and 24 or 22
+            local wrapH = iy + ibgH + 12
+
+            local wrap = N("Frame", {Size = UDim2.new(1, 0, 0, wrapH), BackgroundColor3 = C.Elem, Parent = TC})
+            CR(wrap, 7)
+            STR(wrap, C.Stroke)
+            AIn(wrap)
+            N("TextLabel", {
+                Position = UDim2.new(0, 11, 0, 8),
+                Size = UDim2.new(1, -22, 0, 15),
+                BackgroundTransparency = 1,
+                Font = Enum.Font.GothamMedium,
+                TextSize = UISize(14, 13),
+                TextColor3 = C.White,
+                Text = o5.Label or "Save config",
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = wrap,
+            })
+            local IBG = N("Frame", {
+                Position = UDim2.new(0, 11, 0, iy),
+                Size = UDim2.new(1, -98, 0, ibgH),
+                BackgroundColor3 = C.DropBG,
+                Parent = wrap,
+            })
+            CR(IBG, 5)
+            local iStr = STR(IBG, C.Stroke)
+            local TI = N("TextBox", {
+                Size = UDim2.new(1, -14, 1, 0),
+                Position = UDim2.new(0, 7, 0, 0),
+                BackgroundTransparency = 1,
+                Font = Enum.Font.GothamMedium,
+                TextSize = UISize(13, 12),
+                TextColor3 = C.White,
+                Text = defName,
+                PlaceholderText = ph,
+                PlaceholderColor3 = C.Dim,
+                ClearTextOnFocus = false,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = IBG,
+            })
+            TI.Focused:Connect(function()
+                TW(iStr, {Color = C.Purple, Thickness = 1.5}, 0.15)
+                TW(IBG, {BackgroundColor3 = C.Elem}, 0.15)
+            end)
+            TI.FocusLost:Connect(function()
+                TW(iStr, {Color = C.Stroke, Thickness = 1}, 0.15)
+                TW(IBG, {BackgroundColor3 = C.DropBG}, 0.15)
+            end)
+            local SB = N("TextButton", {
+                Position = UDim2.new(1, -86, 0, iy),
+                Size = UDim2.new(0, 78, 0, ibgH),
+                BackgroundColor3 = C.PurpleDim,
+                Text = "Save",
+                Font = Enum.Font.GothamMedium,
+                TextSize = UISize(13, 12),
+                TextColor3 = C.White,
+                AutoButtonColor = false,
+                Parent = wrap,
+            })
+            CR(SB, 5)
+            STR(SB, C.Purple, 1)
+            SB.MouseEnter:Connect(function()
+                TW(SB, {BackgroundColor3 = C.PurpleD}, 0.12)
+            end)
+            SB.MouseLeave:Connect(function()
+                TW(SB, {BackgroundColor3 = C.PurpleDim}, 0.12)
+            end)
+
+            local listHolder = N("Frame", {
+                Size = UDim2.new(1, 0, 0, 0),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                BackgroundTransparency = 1,
+                Parent = TC,
+            })
+            LL(listHolder, 4)
+
+            local function getAutoloadName()
+                local n = ""
+                pcall(function()
+                    if isfile(autoloadFile) then
+                        n = (readfile(autoloadFile) or ""):gsub("^%s+", ""):gsub("%s+$", "")
+                    end
+                end)
+                return n
+            end
+
+            local function scanFiles()
+                local entries = {}
+                local seenPath = {}
+                local function addEntry(path)
+                    if type(path) ~= "string" or path == "" then
+                        return
+                    end
+                    local name = path:match("([^/\\]+)%.[jJ][sS][oO][nN]$")
+                    if not name then
+                        return
+                    end
+                    if seenPath[path] then
+                        return
+                    end
+                    seenPath[path] = true
+                    table.insert(entries, {name = name, path = path})
+                end
+                pcall(function()
+                    if not isfolder(folder) then
+                        return
+                    end
+                    local list = listfiles(folder)
+                    if type(list) ~= "table" then
+                        return
+                    end
+                    for _, path in ipairs(list) do
+                        addEntry(path)
+                    end
+                end)
+                table.sort(entries, function(a, b)
+                    return a.name:lower() < b.name:lower()
+                end)
+                return entries
+            end
+
+            local function normPath(p)
+                if type(p) ~= "string" then
+                    return ""
+                end
+                return (p:gsub("\\", "/"))
+            end
+
+            local function tryDeletePath(fp)
+                if type(fp) ~= "string" or fp == "" then
+                    return false
+                end
+                local exists = false
+                pcall(function()
+                    exists = isfile(fp)
+                end)
+                if not exists then
+                    return false
+                end
+                pcall(function()
+                    if delfile then
+                        delfile(fp)
+                    end
+                end)
+                pcall(function()
+                    if deletefile then
+                        deletefile(fp)
+                    end
+                end)
+                local gone = false
+                pcall(function()
+                    gone = not isfile(fp)
+                end)
+                return gone
+            end
+
+            local function deleteConfigFile(displayName, listPath)
+                local variants = {}
+                local seen = {}
+                local function add(p)
+                    if type(p) ~= "string" or p == "" then
+                        return
+                    end
+                    if not seen[p] then
+                        seen[p] = true
+                        table.insert(variants, p)
+                    end
+                    local n = normPath(p)
+                    if n ~= p and not seen[n] then
+                        seen[n] = true
+                        table.insert(variants, n)
+                    end
+                end
+                add(listPath)
+                add(folder .. "/" .. displayName .. ".json")
+                add(folder .. "\\" .. displayName .. ".json")
+                local deleted = false
+                for _, fp in ipairs(variants) do
+                    if tryDeletePath(fp) then
+                        deleted = true
+                        break
+                    end
+                end
+                if deleted then
+                    pcall(function()
+                        if getAutoloadName() == displayName and isfile(autoloadFile) then
+                            if delfile then
+                                delfile(autoloadFile)
+                            elseif deletefile then
+                                deletefile(autoloadFile)
+                            end
+                        end
+                    end)
+                    LynxLib:Notify({Title = "Configuration", Description = "Config deleted: " .. displayName, Type = "Warning", Duration = 2})
+                else
+                    LynxLib:Notify({Title = "Configuration", Description = "Could not delete (executor/path).", Type = "Error", Duration = 3})
+                end
+            end
+
+            local function loadConfig(displayName, listPath)
+                pcall(function()
+                    local raw
+                    local tryPaths = {listPath, folder .. "/" .. displayName .. ".json", folder .. "\\" .. displayName .. ".json"}
+                    for _, p in ipairs(tryPaths) do
+                        if type(p) == "string" and p ~= "" then
+                            local okR, data = pcall(function()
+                                return readfile(p)
+                            end)
+                            if okR and data and data ~= "" then
+                                raw = data
+                                break
+                            end
+                        end
+                    end
+                    if not raw then
+                        return
+                    end
+                    local d = game:GetService("HttpService"):JSONDecode(raw)
+                    if d then
+                        for k, v in pairs(d) do
+                            LynxLib.Flags[k] = v
+                        end
+                        for k, v in pairs(d) do
+                            LynxLib.Connection.FlagsChanged:_fire(k, v)
+                        end
+                        LynxLib:Notify({Title = "Configuration", Description = "Loaded: " .. displayName, Type = "Success", Duration = 3})
+                    end
+                end)
+            end
+
+            local function setAutoload(name, on)
+                pcall(function()
+                    if not isfolder(folder) then
+                        makefolder(folder)
+                    end
+                    if on then
+                        writefile(autoloadFile, tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+                        LynxLib:Notify({Title = "Auto-load", Description = name, Type = "Success", Duration = 2})
+                    else
+                        if isfile(autoloadFile) then
+                            if delfile then
+                                delfile(autoloadFile)
+                            elseif deletefile then
+                                deletefile(autoloadFile)
+                            end
+                        end
+                    end
+                end)
+            end
+
+            local function refresh()
+                for _, c in ipairs(listHolder:GetChildren()) do
+                    if not c:IsA("UIListLayout") then
+                        c:Destroy()
+                    end
+                end
+                local files = scanFiles()
+                local autoN = getAutoloadName()
+                for _, entry in ipairs(files) do
+                    local name = entry.name
+                    local fpath = entry.path
+                    local r = N("Frame", {Size = UDim2.new(1, 0, 0, rowH), BackgroundColor3 = C.Elem, Parent = listHolder})
+                    CR(r, 6)
+                    STR(r, C.Stroke, 1)
+                    AIn(r)
+                    N("TextLabel", {
+                        Position = UDim2.new(0, 8, 0, 0),
+                        Size = UDim2.new(1, -158, 1, 0),
+                        BackgroundTransparency = 1,
+                        Font = Enum.Font.GothamMedium,
+                        TextSize = UISize(13, 12),
+                        TextColor3 = C.White,
+                        Text = name,
+                        TextXAlignment = Enum.TextXAlignment.Left,
+                        TextTruncate = Enum.TextTruncate.AtEnd,
+                        Parent = r,
+                    })
+                    local isAuto = autoN == name
+                    local autoBtn = N("TextButton", {
+                        AnchorPoint = Vector2.new(1, 0.5),
+                        Position = UDim2.new(1, -124, 0.5, 0),
+                        Size = UDim2.new(0, mob and 44 or 48, 0, btnH),
+                        BackgroundColor3 = isAuto and C.PurpleDim or C.DropBG,
+                        Text = "Auto",
+                        Font = Enum.Font.GothamBold,
+                        TextSize = UISize(11, 10),
+                        TextColor3 = isAuto and C.PurpleL or C.Dim,
+                        AutoButtonColor = false,
+                        Parent = r,
+                    })
+                    CR(autoBtn, 4)
+                    STR(autoBtn, isAuto and C.Purple or C.Stroke, 1)
+                    autoBtn.MouseEnter:Connect(function()
+                        TW(autoBtn, {BackgroundColor3 = C.ElemH}, 0.1)
+                    end)
+                    autoBtn.MouseLeave:Connect(function()
+                        TW(autoBtn, {BackgroundColor3 = isAuto and C.PurpleDim or C.DropBG}, 0.1)
+                    end)
+                    autoBtn.Activated:Connect(function()
+                        if getAutoloadName() == name then
+                            setAutoload(name, false)
+                        else
+                            setAutoload(name, true)
+                        end
+                        task.defer(function()
+                            task.wait(0.05)
+                            refresh()
+                        end)
+                    end)
+
+                    local loadBtn = N("TextButton", {
+                        AnchorPoint = Vector2.new(1, 0.5),
+                        Position = UDim2.new(1, -68, 0.5, 0),
+                        Size = UDim2.new(0, mob and 52 or 56, 0, btnH),
+                        BackgroundColor3 = C.PurpleDim,
+                        Text = "Load",
+                        Font = Enum.Font.GothamMedium,
+                        TextSize = UISize(12, 11),
+                        TextColor3 = C.White,
+                        AutoButtonColor = false,
+                        Parent = r,
+                    })
+                    CR(loadBtn, 4)
+                    STR(loadBtn, C.Purple, 1)
+                    loadBtn.MouseEnter:Connect(function()
+                        TW(loadBtn, {BackgroundColor3 = C.PurpleD}, 0.1)
+                    end)
+                    loadBtn.MouseLeave:Connect(function()
+                        TW(loadBtn, {BackgroundColor3 = C.PurpleDim}, 0.1)
+                    end)
+                    loadBtn.Activated:Connect(function()
+                        loadConfig(name, fpath)
+                    end)
+
+                    local delBtn = N("TextButton", {
+                        AnchorPoint = Vector2.new(1, 0.5),
+                        Position = UDim2.new(1, -6, 0.5, 0),
+                        Size = UDim2.new(0, 28, 0, btnH),
+                        BackgroundColor3 = Color3.fromRGB(55, 28, 38),
+                        Text = "×",
+                        Font = Enum.Font.GothamBold,
+                        TextSize = UISize(16, 15),
+                        TextColor3 = C.RedH,
+                        AutoButtonColor = false,
+                        ZIndex = 5,
+                        Active = true,
+                        Parent = r,
+                    })
+                    CR(delBtn, 4)
+                    STR(delBtn, C.Red, 1)
+                    delBtn.MouseEnter:Connect(function()
+                        TW(delBtn, {BackgroundColor3 = Color3.fromRGB(75, 35, 45)}, 0.1)
+                    end)
+                    delBtn.MouseLeave:Connect(function()
+                        TW(delBtn, {BackgroundColor3 = Color3.fromRGB(55, 28, 38)}, 0.1)
+                    end)
+                    delBtn.Activated:Connect(function()
+                        deleteConfigFile(name, fpath)
+                        task.defer(function()
+                            task.wait(0.05)
+                            refresh()
+                        end)
+                    end)
+                end
+            end
+
+            SB.Activated:Connect(function()
+                local name = (TI.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+                if name == "" then
+                    return
+                end
+                pcall(function()
+                    if not isfolder(folder) then
+                        makefolder(folder)
+                    end
+                    writefile(folder .. "/" .. name .. ".json", game:GetService("HttpService"):JSONEncode(LynxLib.Flags))
+                    LynxLib:Notify({Title = "Configuration", Description = "Saved: " .. name, Type = "Success", Duration = 2})
+                end)
+                task.defer(function()
+                    task.wait(0.05)
+                    refresh()
+                end)
+            end)
+
+            local api = {}
+            function api:Refresh()
+                refresh()
+            end
+            function api:SetName(s)
+                TI.Text = s or ""
+            end
+            function api:Visible(v)
+                if v == nil then
+                    wrap.Visible = not wrap.Visible
+                    listHolder.Visible = wrap.Visible
+                else
+                    wrap.Visible = v
+                    listHolder.Visible = v
+                end
+            end
+            function api:Destroy()
+                wrap:Destroy()
+                listHolder:Destroy()
+            end
+            refresh()
+            return api
+        end
+
         return Tab
     end -- MakeTab
 
-    -- ══════════════════════════════════════════════════════
-    --  INTRO ANIMATION
-    --  1. Fundo desfocado
-    --  2. Título + SubTitle no centro
-    --  3. Barra de carregamento estilo toggle (pill)
-    --  4. Fade out → menu aparece
-    -- ══════════════════════════════════════════════════════
-    Main.Visible = false  -- esconde o menu durante o loading
+    -- ══ Intro (blur + splash + loading bar → hub) ══════════════════════
+    Main.Visible = false
 
-    local IntroGui = N("ScreenGui",{
-        Name           = "LynxIntro",
+    local IntroGui = N("ScreenGui", {
+        Name = "LynxIntro",
         IgnoreGuiInset = true,
-        ResetOnSpawn   = false,
+        ResetOnSpawn = false,
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-        Parent         = LP:WaitForChild("PlayerGui"),
+        DisplayOrder = 100,
+        Parent = LP:WaitForChild("PlayerGui"),
     })
 
-    -- Fundo escuro com desfoque
-    local Blur = N("BlurEffect",{
-        Size   = 0,
+    local introBlur = N("BlurEffect", {
+        Name = "LynxIntroBlur",
+        Size = 0,
         Parent = game:GetService("Lighting"),
     })
-    TW(Blur, {Size = 18}, 0.5, Enum.EasingStyle.Quart)
+    TW(introBlur, { Size = 18 }, 0.5, Enum.EasingStyle.Quart)
 
-    local Overlay = N("Frame",{
-        Size             = UDim2.new(1,0,1,0),
+    local Overlay = N("Frame", {
+        Size = UDim2.new(1, 0, 1, 0),
         BackgroundColor3 = C.Black,
         BackgroundTransparency = 1,
-        Parent           = IntroGui,
+        Parent = IntroGui,
     })
-    TW(Overlay, {BackgroundTransparency = 0.45}, 0.5, Enum.EasingStyle.Quart)
+    TW(Overlay, { BackgroundTransparency = 0.45 }, 0.5, Enum.EasingStyle.Quart)
 
-    -- Card central
-    local Card = N("Frame",{
-        AnchorPoint      = Vector2.new(0.5, 0.5),
-        Position         = UDim2.new(0.5, 0, 0.5, 0),
-        Size             = UDim2.new(0, 340, 0, 120),
+    local Card = N("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = UDim2.new(0, 340, 0, 120),
         BackgroundTransparency = 1,
-        Parent           = IntroGui,
+        Parent = IntroGui,
     })
 
-    -- Título  "Ly" branco + "nx" roxo
-    local IntroTitle = N("TextLabel",{
-        AnchorPoint            = Vector2.new(0.5, 0),
-        Position               = UDim2.new(0.5, 0, 0, 0),
-        Size                   = UDim2.new(1, 0, 0, 56),
+    local IntroTitle = N("TextLabel", {
+        AnchorPoint = Vector2.new(0.5, 0),
+        Position = UDim2.new(0.5, 0, 0, 0),
+        Size = UDim2.new(1, 0, 0, 56),
         BackgroundTransparency = 1,
-        Font                   = Enum.Font.GothamBlack,
-        TextSize               = 52,
-        TextColor3             = C.White,
-        TextXAlignment         = Enum.TextXAlignment.Center,
-        RichText               = true,
-        Text                   = '<font color="rgb(238,232,255)">Ly</font><font color="rgb(138,43,226)">nx</font>',
-        TextTransparency       = 1,
-        Parent                 = Card,
+        Font = Enum.Font.GothamBlack,
+        TextSize = 52,
+        TextColor3 = C.White,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        RichText = true,
+        Text = '<font color="rgb(238,232,255)">Lyn</font><font color="rgb(138,43,226)">x</font><font color="rgb(238,232,255)">Scripts</font>',
+        TextTransparency = 1,
+        Parent = Card,
     })
 
-    -- SubTitle
-    local IntroSub = N("TextLabel",{
-        AnchorPoint            = Vector2.new(0.5, 0),
-        Position               = UDim2.new(0.5, 0, 0, 60),
-        Size                   = UDim2.new(1, 0, 0, 20),
+    local IntroSub = N("TextLabel", {
+        AnchorPoint = Vector2.new(0.5, 0),
+        Position = UDim2.new(0.5, 0, 0, 60),
+        Size = UDim2.new(1, 0, 0, 20),
         BackgroundTransparency = 1,
-        Font                   = Enum.Font.GothamSemibold,
-        TextSize               = 16,
-        TextColor3             = C.Dim,
-        TextXAlignment         = Enum.TextXAlignment.Center,
-        Text                   = subtitle,
-        TextTransparency       = 1,
-        Parent                 = Card,
+        Font = Enum.Font.GothamSemibold,
+        TextSize = 16,
+        TextColor3 = C.Dim,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        Text = "Initializing",
+        TextTransparency = 1,
+        Parent = Card,
     })
 
-    -- Barra de carregamento (pill track estilo toggle)
-    local BarTrack = N("Frame",{
-        AnchorPoint      = Vector2.new(0.5, 0),
-        Position         = UDim2.new(0.5, 0, 0, 92),
-        Size             = UDim2.new(0, 180, 0, 8),
+    local BarTrack = N("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0),
+        Position = UDim2.new(0.5, 0, 0, 92),
+        Size = UDim2.new(0, 180, 0, 8),
         BackgroundColor3 = C.TgOff,
         BackgroundTransparency = 1,
-        Parent           = Card,
+        Parent = Card,
     })
     CR(BarTrack, 4)
 
-    local BarFill = N("Frame",{
-        Size             = UDim2.new(0, 0, 1, 0),
+    local BarFill = N("Frame", {
+        Size = UDim2.new(0, 0, 1, 0),
         BackgroundColor3 = C.Purple,
-        Parent           = BarTrack,
+        Parent = BarTrack,
     })
     CR(BarFill, 4)
-    N("UIGradient",{
-        Color = ColorSequence.new{
+    N("UIGradient", {
+        Color = ColorSequence.new({
             ColorSequenceKeypoint.new(0, C.PurpleL),
             ColorSequenceKeypoint.new(1, C.Purple),
-        },
+        }),
         Parent = BarFill,
     })
 
-    -- Sequência de animação
     task.spawn(function()
-        -- fade in título e subtítulo
-        task.wait(0.3)
-        TW(IntroTitle, {TextTransparency = 0},       0.5, Enum.EasingStyle.Quart)
-        task.wait(0.2)
-        TW(IntroSub,   {TextTransparency = 0},       0.45, Enum.EasingStyle.Quart)
-        TW(BarTrack,   {BackgroundTransparency = 0}, 0.45, Enum.EasingStyle.Quart)
-        task.wait(0.4)
+        local function cleanupAndShowHub()
+            pcall(function() IntroGui:Destroy() end)
+            pcall(function() introBlur:Destroy() end)
+            Main.Visible = true
+            Main.BackgroundTransparency = 1
+            Main.Size = UDim2.new(0, W * 0.85, 0, H * 0.85)
+            SP(Main, {
+                Size = UDim2.new(0, W, 0, H),
+                BackgroundTransparency = 0,
+            }, 0.45)
+            TW(mStroke, { Transparency = 0 }, 0.4)
+        end
 
-        -- barra carregando — 3.5s mais lento e bonito
-        TW(BarFill, {Size = UDim2.new(1, 0, 1, 0)}, 3.5, Enum.EasingStyle.Quint)
-        task.wait(3.8)
+        local ok, err = pcall(function()
+            task.wait(0.1)
+            TW(IntroTitle, { TextTransparency = 0 }, 0.3, Enum.EasingStyle.Quart)
+            task.wait(0.1)
+            TW(IntroSub, { TextTransparency = 0 }, 0.25, Enum.EasingStyle.Quart)
+            TW(BarTrack, { BackgroundTransparency = 0 }, 0.25, Enum.EasingStyle.Quart)
+            task.wait(0.2)
 
-        -- fade out tudo
-        TW(IntroTitle, {TextTransparency = 1}, 0.4, Enum.EasingStyle.Quart)
-        TW(IntroSub,   {TextTransparency = 1}, 0.4, Enum.EasingStyle.Quart)
-        TW(BarTrack,   {BackgroundTransparency = 1}, 0.35, Enum.EasingStyle.Quart)
-        TW(BarFill,    {BackgroundTransparency = 1}, 0.35, Enum.EasingStyle.Quart)
-        TW(Overlay,    {BackgroundTransparency = 1}, 0.5, Enum.EasingStyle.Quart)
-        TW(Blur,       {Size = 0}, 0.5, Enum.EasingStyle.Quart)
-        task.wait(0.45)
+            TW(BarFill, { Size = UDim2.new(1, 0, 1, 0) }, 1.0, Enum.EasingStyle.Quint)
+            task.wait(1.2)
 
-        -- destrói o intro e mostra o menu
-        IntroGui:Destroy()
-        Main.Visible = true
-        Main.BackgroundTransparency = 1
-        Main.Size = UDim2.new(0, W*0.85, 0, H*0.85)
-        SP(Main, {
-            Size                 = UDim2.new(0, W, 0, H),
-            BackgroundTransparency = 0,
-        }, 0.45)
+            TW(IntroTitle, { TextTransparency = 1 }, 0.25, Enum.EasingStyle.Quart)
+            TW(IntroSub, { TextTransparency = 1 }, 0.25, Enum.EasingStyle.Quart)
+            TW(BarTrack, { BackgroundTransparency = 1 }, 0.25, Enum.EasingStyle.Quart)
+            TW(BarFill, { BackgroundTransparency = 1 }, 0.25, Enum.EasingStyle.Quart)
+            TW(Overlay, { BackgroundTransparency = 1 }, 0.3, Enum.EasingStyle.Quart)
+            TW(introBlur, { Size = 0 }, 0.3, Enum.EasingStyle.Quart)
+            task.wait(0.3)
+
+            cleanupAndShowHub()
+        end)
+        if not ok then
+            if warn then warn("[Lynx intro]", err) end
+            cleanupAndShowHub()
+        end
+    end)
+
+    LynxLib.Flags.MenuKeybind = LynxLib.Flags.MenuKeybind or "RightControl"
+    UIS.InputBegan:Connect(function(input, gp)
+        if gp or suppressMenuKeyToggle then
+            return
+        end
+        if input.KeyCode.Name == LynxLib.Flags.MenuKeybind then
+            GUI.Enabled = not GUI.Enabled
+        end
     end)
 
     return Win
@@ -1506,4 +2585,59 @@ function LynxLib:SetScale(n)
     end
 end
 
-return LynxLib
+-- ══════════════════════════════════════════════════════════
+--  AUTO RUN
+-- ══════════════════════════════════════════════════════════
+pcall(function()
+    if getgenv then getgenv().LynxLib = LynxLib end
+end)
+
+local Win = LynxLib:MakeWindow({})
+
+-- ══ HOME ══
+local HomeTab = Win:MakeTab({"Home", "home"})
+HomeTab:AddParagraph({"Welcome to LynXScripts!", "Premium script hub for Roblox.\nSelect a tab on the left to get started."})
+HomeTab:AddButton({"Discord Server", function()
+    pcall(function()
+        if setclipboard then
+            setclipboard("https://discord.gg/vnmgYmVtuv")
+            LynxLib:Notify({Title="Link Copied", Description="Discord invite copied!", Type="Success"})
+        end
+    end)
+end})
+HomeTab:AddDiscordInvite({"LynXScripts Community","Official script hub","","https://discord.gg/vnmgYmVtuv",Online="127",Members="1.2k"})
+
+-- ══ SETTINGS ══
+local SettingsTab = Win:MakeTab({"Settings", "settings"})
+SettingsTab:SetSpacing(4, 6, 8, 8)
+SettingsTab:AddSection({"MENU"})
+
+SettingsTab:AddKeybind({"Hide/Show Menu Key", "RightControl", "MenuKeybind"})
+
+
+SettingsTab:AddSection({"CONFIGURATION"})
+
+SettingsTab:AddConfigManager({
+    Label = "Save config",
+    Placeholder = "Config name...",
+    Folder = "LynxConfigs",
+    AutoloadFile = "LynxConfigs/autoload.txt",
+})
+
+pcall(function()
+    if isfile("LynxConfigs/autoload.txt") then
+        local auto = readfile("LynxConfigs/autoload.txt")
+        if auto and auto ~= "" and isfile("LynxConfigs/"..auto..".json") then
+            local stringdata = readfile("LynxConfigs/" .. auto .. ".json")
+            if stringdata then
+                local d = game:GetService("HttpService"):JSONDecode(stringdata)
+                if d then
+                    for k,v in pairs(d) do LynxLib.Flags[k] = v end
+                    for k,v in pairs(d) do LynxLib.Connection.FlagsChanged:_fire(k, v) end
+                end
+            end
+        end
+    end
+end)
+
+LynxLib:Notify({Title="LynXScripts", Description="Hub loaded successfully!", Type="Success", Duration=4})
